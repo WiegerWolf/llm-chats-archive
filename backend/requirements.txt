@@ -1,0 +1,4 @@
+argon2-cffi==23.1.0
+fastapi==0.115.5
+python-multipart==0.0.17
+uvicorn[standard]==0.32.0
