@@ -1,14 +1,17 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { marked } from 'marked'
+import {
+  MessageSquareText, Upload, BarChart3, Settings, LogOut, ChevronLeft,
+  Search, Loader2, Paperclip, Eye, EyeOff,
+  ArrowUpFromLine, ChevronRight,
+} from 'lucide-react'
+import { cn } from './cn'
 import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type SessionState } from './api'
 
 // ── Marked config ──
 
-marked.setOptions({
-  gfm: true,
-  breaks: true,
-})
+marked.setOptions({ gfm: true, breaks: true })
 
 function renderMarkdown(text: string): string {
   return marked.parse(text, { async: false }) as string
@@ -20,9 +23,7 @@ function timeAgo(value?: string | null): string {
   if (!value) return '—'
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
-  const now = Date.now()
-  const diff = now - d.getTime()
-  const seconds = Math.floor(diff / 1000)
+  const seconds = Math.floor((Date.now() - d.getTime()) / 1000)
   if (seconds < 60) return 'just now'
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${minutes}m ago`
@@ -32,8 +33,7 @@ function timeAgo(value?: string | null): string {
   if (days < 30) return `${days}d ago`
   const months = Math.floor(days / 30)
   if (months < 12) return `${months}mo ago`
-  const years = Math.floor(months / 12)
-  return `${years}y ago`
+  return `${Math.floor(months / 12)}y ago`
 }
 
 function formatDateFull(value?: string | null): string {
@@ -51,6 +51,72 @@ function formatDateShort(value?: string | null): string {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+// ── Shared tiny components ──
+
+function Badge({ children, variant = 'default', className }: { children: React.ReactNode; variant?: 'default' | 'chatgpt' | 'claude' | 'gemini' | 'completed' | 'failed' | 'processing' | 'queued'; className?: string }) {
+  const styles: Record<string, string> = {
+    default: 'bg-zinc-100 text-zinc-600',
+    chatgpt: 'bg-emerald-50 text-emerald-700',
+    claude: 'bg-pink-50 text-pink-700',
+    gemini: 'bg-blue-50 text-blue-700',
+    completed: 'bg-emerald-50 text-emerald-600',
+    failed: 'bg-red-50 text-red-600',
+    processing: 'bg-amber-50 text-amber-600',
+    queued: 'bg-amber-50 text-amber-600',
+  }
+  return (
+    <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-medium whitespace-nowrap', styles[variant] || styles.default, className)}>
+      {children}
+    </span>
+  )
+}
+
+function ProviderBadge({ provider }: { provider: string }) {
+  const p = provider.toLowerCase()
+  let variant: 'chatgpt' | 'claude' | 'gemini' | 'default' = 'default'
+  if (p.includes('chatgpt') || p.includes('openai')) variant = 'chatgpt'
+  else if (p.includes('claude') || p.includes('anthropic')) variant = 'claude'
+  else if (p.includes('gemini') || p.includes('google')) variant = 'gemini'
+  return <Badge variant={variant}>{provider}</Badge>
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = status.toLowerCase() as 'completed' | 'failed' | 'processing' | 'queued'
+  return <Badge variant={s}>{status}</Badge>
+}
+
+const RoleStyles: Record<string, string> = {
+  user: 'bg-blue-50 text-blue-700',
+  assistant: 'bg-emerald-50 text-emerald-700',
+  system: 'bg-zinc-100 text-zinc-500',
+  tool: 'bg-amber-50 text-amber-700',
+}
+
+function RoleMarker({ role }: { role: string }) {
+  return (
+    <span className={cn('inline-flex items-center rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wider font-mono', RoleStyles[role] || 'bg-zinc-100 text-zinc-400')}>
+      {role}
+    </span>
+  )
+}
+
+function Btn({ children, variant = 'primary', className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
+  const styles = {
+    primary: 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700 hover:border-indigo-700',
+    secondary: 'bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300',
+    ghost: 'bg-transparent text-zinc-500 border-transparent hover:bg-zinc-100 hover:text-zinc-700',
+    danger: 'bg-transparent text-red-600 border-zinc-200 hover:bg-red-50 hover:border-red-300',
+  }
+  return (
+    <button
+      className={cn('inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[0.8125rem] font-medium border rounded-md transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap', styles[variant], className)}
+      {...props}
+    >
+      {children}
+    </button>
+  )
+}
+
 // ── App root ──
 
 function App() {
@@ -66,36 +132,27 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    void refreshSession()
-  }, [])
+  useEffect(() => { void refreshSession() }, [])
 
-  if (!session) {
-    return <FullScreenMessage title="Loading" message={error || 'Connecting to archive...'} />
-  }
-
-  if (session.needs_setup) {
-    return <SetupPage onComplete={refreshSession} />
-  }
-
-  if (!session.authenticated) {
-    return <LoginPage onLogin={refreshSession} />
-  }
+  if (!session) return <AuthScreen kicker="Chat Archive" title="Loading" message={error || 'Connecting to archive...'} />
+  if (session.needs_setup) return <SetupPage onComplete={refreshSession} />
+  if (!session.authenticated) return <LoginPage onLogin={refreshSession} />
 
   return (
     <BrowserRouter>
-      <ArchiveShell onLogout={refreshSession} />
+      <Shell onLogout={refreshSession} />
     </BrowserRouter>
   )
 }
 
-function FullScreenMessage({ title, message }: { title: string; message: string }) {
+function AuthScreen({ kicker, title, message, children }: { kicker: string; title: string; message?: string; children?: React.ReactNode }) {
   return (
-    <div className="auth-screen">
-      <div className="auth-panel">
-        <p className="panel-kicker">Chat Archive</p>
-        <h1>{title}</h1>
-        <p className="muted" style={{ margin: 0, fontSize: '0.8125rem' }}>{message}</p>
+    <div className="min-h-screen grid place-items-center p-8 bg-zinc-50">
+      <div className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-lg shadow-sm">
+        <p className="text-2xs font-medium text-zinc-400 uppercase tracking-wider">{kicker}</p>
+        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        {message && <p className="text-[0.8125rem] text-zinc-500">{message}</p>}
+        {children}
       </div>
     </div>
   )
@@ -103,44 +160,29 @@ function FullScreenMessage({ title, message }: { title: string; message: string 
 
 function SetupPage({ onComplete }: { onComplete: () => Promise<void> }) {
   const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const onSubmit = async (event: FormEvent) => {
-    event.preventDefault()
-    if (password !== confirmPassword) {
-      setError('Passwords do not match.')
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      await api.setupPassword(password)
-      await onComplete()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not set the password.')
-    } finally {
-      setBusy(false)
-    }
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (password !== confirm) { setError('Passwords do not match.'); return }
+    setBusy(true); setError('')
+    try { await api.setupPassword(password); await onComplete() }
+    catch (err) { setError(err instanceof Error ? err.message : 'Failed.') }
+    finally { setBusy(false) }
   }
 
   return (
-    <div className="auth-screen">
-      <form className="auth-panel" onSubmit={onSubmit}>
-        <p className="panel-kicker">First-run setup</p>
-        <h1>Create password</h1>
-        <p className="muted" style={{ margin: 0, fontSize: '0.8125rem' }}>Single-user, LAN-only. Minimum 12 characters.</p>
-        <label>
-          Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        </label>
-        <label>
-          Confirm
-          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
-        </label>
-        {error && <p className="error-text">{error}</p>}
-        <button type="submit" disabled={busy}>{busy ? 'Saving...' : 'Set password'}</button>
+    <div className="min-h-screen grid place-items-center p-8 bg-zinc-50">
+      <form className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-lg shadow-sm" onSubmit={onSubmit}>
+        <p className="text-2xs font-medium text-zinc-400 uppercase tracking-wider">First-run setup</p>
+        <h1 className="text-xl font-semibold tracking-tight">Create password</h1>
+        <p className="text-[0.8125rem] text-zinc-500">Single-user, LAN-only. Minimum 12 characters.</p>
+        <FieldLabel label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required className="input" /></FieldLabel>
+        <FieldLabel label="Confirm"><input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required className="input" /></FieldLabel>
+        {error && <p className="text-[0.8125rem] text-red-600">{error}</p>}
+        <Btn type="submit" disabled={busy}>{busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving...</> : 'Set password'}</Btn>
       </form>
     </div>
   )
@@ -151,76 +193,108 @@ function LoginPage({ onLogin }: { onLogin: () => Promise<void> }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const onSubmit = async (event: FormEvent) => {
-    event.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      await api.login(password)
-      await onLogin()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed.')
-    } finally {
-      setBusy(false)
-    }
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault(); setBusy(true); setError('')
+    try { await api.login(password); await onLogin() }
+    catch (err) { setError(err instanceof Error ? err.message : 'Login failed.') }
+    finally { setBusy(false) }
   }
 
   return (
-    <div className="auth-screen">
-      <form className="auth-panel" onSubmit={onSubmit}>
-        <p className="panel-kicker">Chat Archive</p>
-        <h1>Sign in</h1>
-        <label>
-          Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
-        </label>
-        {error && <p className="error-text">{error}</p>}
-        <button type="submit" disabled={busy}>{busy ? 'Signing in...' : 'Sign in'}</button>
+    <div className="min-h-screen grid place-items-center p-8 bg-zinc-50">
+      <form className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-lg shadow-sm" onSubmit={onSubmit}>
+        <p className="text-2xs font-medium text-zinc-400 uppercase tracking-wider">Chat Archive</p>
+        <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
+        <FieldLabel label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus className="input" /></FieldLabel>
+        {error && <p className="text-[0.8125rem] text-red-600">{error}</p>}
+        <Btn type="submit" disabled={busy}>{busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Signing in...</> : 'Sign in'}</Btn>
       </form>
     </div>
   )
 }
 
-// ── SVG icons (inline, tiny) ──
-
-const icons = {
-  dashboard: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v6H2V2zm7 0h5v4H9V2zM2 10h5v4H2v-4zm7-2h5v6H9V8z"/></svg>,
-  imports: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v8.5m0 0L5 6.5m3 3L11 6.5M3 11v2h10v-2"/></svg>,
-  conversations: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v8H5l-3 3V3z"/></svg>,
-  settings: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 10a2 2 0 100-4 2 2 0 000 4zm6-1.5h-1.17a4.98 4.98 0 00-.42-1.01l.83-.83-1.5-1.5-.83.83a4.98 4.98 0 00-1.01-.42V4.5h-2v1.07c-.36.09-.7.23-1.01.42l-.83-.83-1.5 1.5.83.83c-.19.31-.33.65-.42 1.01H4v2h1.07c.09.36.23.7.42 1.01l-.83.83 1.5 1.5.83-.83c.31.19.65.33 1.01.42V13h2v-1.07c.36-.09.7-.23 1.01-.42l.83.83 1.5-1.5-.83-.83c.19-.31.33-.65.42-1.01H14v-2z"/></svg>,
-  logout: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M6 2H3v12h3m4-6h5m0 0l-2-2m2 2l-2 2"/></svg>,
-  back: <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3L5 8l5 5"/></svg>,
+function FieldLabel({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-1.5 text-[0.8125rem] font-medium text-zinc-600">
+      {label}
+      {children}
+    </label>
+  )
 }
 
-function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
-  const navigate = useNavigate()
+// ── Shell & sidebar ──
 
-  const logout = async () => {
-    await api.logout()
-    await onLogout()
-    navigate('/')
-  }
+const NAV_ITEMS: Array<{ to: string; icon: typeof MessageSquareText; label: string; end?: boolean }> = [
+  { to: '/', icon: MessageSquareText, label: 'Conversations', end: true },
+  { to: '/imports', icon: Upload, label: 'Imports' },
+  { to: '/stats', icon: BarChart3, label: 'Stats' },
+  { to: '/settings', icon: Settings, label: 'Settings' },
+]
+
+function Shell({ onLogout }: { onLogout: () => Promise<void> }) {
+  const navigate = useNavigate()
+  const [collapsed, setCollapsed] = useState(false)
+
+  const logout = async () => { await api.logout(); await onLogout(); navigate('/') }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <h1>Chat Archive</h1>
-          <p>Unified LLM export viewer</p>
+    <div className={cn('grid min-h-screen transition-[grid-template-columns] duration-200', collapsed ? 'grid-cols-[56px_1fr]' : 'grid-cols-[220px_1fr]')}>
+      <aside className="flex flex-col bg-sidebar text-sidebar-muted sticky top-0 h-screen overflow-hidden">
+        {/* Brand */}
+        <div className={cn('flex items-center gap-2.5 border-b border-sidebar-border px-3 min-h-[56px]', collapsed && 'justify-center')}>
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-600 text-white shrink-0">
+            <MessageSquareText className="w-4 h-4" />
+          </div>
+          {!collapsed && (
+            <div className="overflow-hidden">
+              <p className="text-[0.8125rem] font-semibold text-sidebar-foreground leading-tight truncate">Chat Archive</p>
+              <p className="text-2xs text-sidebar-muted leading-tight truncate">LLM export viewer</p>
+            </div>
+          )}
         </div>
-        <nav className="sidebar-nav">
-          <NavLink to="/" end>{icons.conversations} Conversations</NavLink>
-          <NavLink to="/imports">{icons.imports} Imports</NavLink>
-          <NavLink to="/stats">{icons.dashboard} Stats</NavLink>
-          <NavLink to="/settings">{icons.settings} Settings</NavLink>
+
+        {/* Nav */}
+        <nav className="flex-1 flex flex-col gap-0.5 p-2 overflow-y-auto">
+          {NAV_ITEMS.map(({ to, icon: Icon, label, end }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={end}
+              className={({ isActive }) => cn(
+                'group flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[0.8125rem] font-medium transition-colors',
+                collapsed && 'justify-center px-0',
+                isActive
+                  ? 'bg-sidebar-ring text-sidebar-foreground'
+                  : 'text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground',
+              )}
+            >
+              <Icon className="w-4 h-4 shrink-0 opacity-60 group-hover:opacity-90" />
+              {!collapsed && <span className="truncate">{label}</span>}
+            </NavLink>
+          ))}
         </nav>
-        <div className="sidebar-footer">
-          <button className="btn btn-ghost" type="button" onClick={() => void logout()} style={{ color: 'var(--sidebar-text)', width: '100%', justifyContent: 'flex-start' }}>
-            {icons.logout} Log out
+
+        {/* Footer */}
+        <div className="border-t border-sidebar-border p-2 flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className={cn('flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[0.8125rem] font-medium text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors w-full', collapsed && 'justify-center px-0')}
+          >
+            <LogOut className="w-4 h-4 shrink-0 opacity-60" />
+            {!collapsed && <span>Log out</span>}
+          </button>
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            className={cn('flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-2xs text-sidebar-muted/60 hover:bg-sidebar-accent hover:text-sidebar-muted transition-colors w-full', collapsed && 'justify-center px-0')}
+          >
+            {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <><ChevronLeft className="w-3.5 h-3.5" /> Collapse</>}
           </button>
         </div>
       </aside>
-      <main className="main-content">
+
+      <main className="min-h-screen overflow-y-auto bg-white">
         <Routes>
           <Route path="/" element={<ConversationsPage />} />
           <Route path="/conversations/:conversationId" element={<ConversationDetailPage />} />
@@ -233,117 +307,81 @@ function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
   )
 }
 
-// ── Dashboard ──
+// ── Stats (formerly Dashboard) ──
 
 function StatsPage() {
   const navigate = useNavigate()
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    api.getDashboard().then(setData).catch((err: Error) => setError(err.message))
-  }, [])
+  useEffect(() => { api.getDashboard().then(setData).catch((err: Error) => setError(err.message)) }, [])
 
-  if (error) return <PageState title="Stats" message={error} />
-  if (!data) return <PageState title="Stats" message="Loading..." />
+  if (error) return <PageShell title="Stats"><p className="text-red-600 text-[0.8125rem]">{error}</p></PageShell>
+  if (!data) return <PageShell title="Stats"><p className="text-zinc-400 text-[0.8125rem]">Loading...</p></PageShell>
 
   const isEmpty = data.conversation_count === 0 && data.import_count === 0
 
   if (isEmpty) {
     return (
-      <div className="page">
-        <header className="page-header">
-          <div>
-            <h2>Stats</h2>
-          </div>
-        </header>
-        <div className="onboarding-card">
-          <div className="onboarding-icon">{icons.imports}</div>
-          <h3>No data yet</h3>
-          <p>Upload a ChatGPT, Claude, or Gemini export to start browsing your conversations.</p>
-          <button className="btn btn-primary" type="button" onClick={() => navigate('/imports')}>
-            Go to Imports
-          </button>
+      <PageShell title="Stats">
+        <div className="flex flex-col items-center gap-3 py-16 border-2 border-dashed border-zinc-200 rounded-lg text-center">
+          <Upload className="w-8 h-8 text-zinc-300" />
+          <h3 className="text-base font-semibold">No data yet</h3>
+          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT, Claude, or Gemini export to start browsing your conversations.</p>
+          <Btn onClick={() => navigate('/imports')}>Go to Imports</Btn>
         </div>
-      </div>
+      </PageShell>
     )
   }
 
   return (
-    <div className="page page-wide">
-      <header className="page-header">
-        <div>
-          <h2>Stats</h2>
-          <p className="page-desc">Archive overview across all providers</p>
-        </div>
-      </header>
-
-      <div className="stats-row">
-        <div className="stat-card">
-          <div className="stat-value">{data.conversation_count.toLocaleString()}</div>
-          <div className="stat-label">Conversations</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value">{data.message_count.toLocaleString()}</div>
-          <div className="stat-label">Messages</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value">{data.import_count.toLocaleString()}</div>
-          <div className="stat-label">Imports</div>
-        </div>
+    <PageShell title="Stats" desc="Archive overview across all providers">
+      <div className="grid grid-cols-3 gap-3 mb-6">
+        {[
+          { label: 'Conversations', value: data.conversation_count },
+          { label: 'Messages', value: data.message_count },
+          { label: 'Imports', value: data.import_count },
+        ].map(({ label, value }) => (
+          <div key={label} className="border border-zinc-200 rounded-lg p-3.5">
+            <div className="text-2xl font-semibold tabular-nums tracking-tight">{value.toLocaleString()}</div>
+            <div className="text-xs text-zinc-500 mt-0.5">{label}</div>
+          </div>
+        ))}
       </div>
 
-      <div className="two-col">
-        <div className="panel">
-          <div className="panel-header">
-            <h3>Providers</h3>
-          </div>
-          <div className="panel-body">
-            {data.providers.length ? (
-              <ul className="provider-list">
-                {data.providers.map((p) => (
-                  <li key={p.provider} className="provider-row-link" onClick={() => navigate(`/?provider=${encodeURIComponent(p.provider)}`)}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <ProviderBadge provider={p.provider} />
-                      {p.provider}
-                    </span>
-                    <span className="provider-count">{p.count.toLocaleString()} &rsaquo;</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <div className="empty-state">No conversations yet</div>
-            )}
-          </div>
-        </div>
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <Panel title="Providers">
+          {data.providers.length ? (
+            <ul>
+              {data.providers.map((p) => (
+                <li
+                  key={p.provider}
+                  className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-100 last:border-b-0 cursor-pointer hover:bg-zinc-50 transition-colors"
+                  onClick={() => navigate(`/?provider=${encodeURIComponent(p.provider)}`)}
+                >
+                  <span className="flex items-center gap-2"><ProviderBadge provider={p.provider} /> {p.provider}</span>
+                  <span className="text-xs font-semibold tabular-nums text-zinc-500">{p.count.toLocaleString()} <ChevronRight className="w-3 h-3 inline text-zinc-300" /></span>
+                </li>
+              ))}
+            </ul>
+          ) : <EmptyState>No conversations yet</EmptyState>}
+        </Panel>
 
-        <div className="panel">
-          <div className="panel-header">
-            <h3>Recent imports</h3>
-          </div>
-          <div className="panel-body">
-            {data.recent_imports.length ? (
-              <ImportList items={data.recent_imports} compact />
-            ) : (
-              <div className="empty-state">No imports yet</div>
-            )}
-          </div>
-        </div>
+        <Panel title="Recent imports">
+          {data.recent_imports.length
+            ? <ImportList items={data.recent_imports} compact />
+            : <EmptyState>No imports yet</EmptyState>
+          }
+        </Panel>
       </div>
 
-      <div className="panel">
-        <div className="panel-header">
-          <h3>Recent conversations</h3>
-        </div>
-        <div className="panel-body">
-          {data.recent_conversations.length ? (
-            <ConversationList items={data.recent_conversations} />
-          ) : (
-            <div className="empty-state">Import a provider export to get started</div>
-          )}
-        </div>
-      </div>
-    </div>
+      <Panel title="Recent conversations">
+        {data.recent_conversations.length
+          ? <ConversationList items={data.recent_conversations} />
+          : <EmptyState>Import a provider export to get started</EmptyState>
+        }
+      </Panel>
+    </PageShell>
   )
 }
 
@@ -358,130 +396,86 @@ function ImportsPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadImports = useCallback(async () => {
-    try {
-      const items = await api.listImports()
-      setImports(items)
-      setError('')
-      return items
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load imports.')
-      return []
-    }
+    try { const items = await api.listImports(); setImports(items); setError(''); return items }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not load imports.'); return [] }
   }, [])
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }, [])
+  const stopPolling = useCallback(() => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }, [])
 
   const startPolling = useCallback(() => {
     stopPolling()
     pollRef.current = setInterval(async () => {
       const items = await loadImports()
-      const hasPending = items.some((i) => i.status === 'processing' || i.status === 'queued')
-      if (!hasPending) stopPolling()
+      if (!items.some((i) => i.status === 'processing' || i.status === 'queued')) stopPolling()
     }, 2000)
   }, [loadImports, stopPolling])
 
-  useEffect(() => {
-    void loadImports()
-    return stopPolling
-  }, [loadImports, stopPolling])
+  useEffect(() => { void loadImports(); return stopPolling }, [loadImports, stopPolling])
 
-  const onSubmit = async (event: FormEvent) => {
-    event.preventDefault()
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault()
     if (!selectedFile) return
-    setBusy(true)
-    setError('')
+    setBusy(true); setError('')
     try {
       await api.uploadImport(selectedFile)
       setSelectedFile(null)
-      // Reset the file input
-      const fileInput = document.querySelector('.upload-zone input[type="file"]') as HTMLInputElement | null
-      if (fileInput) fileInput.value = ''
-      await loadImports()
-      startPolling()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed.')
-    } finally {
-      setBusy(false)
-    }
+      const fi = document.querySelector('.upload-drop input[type="file"]') as HTMLInputElement | null
+      if (fi) fi.value = ''
+      await loadImports(); startPolling()
+    } catch (err) { setError(err instanceof Error ? err.message : 'Upload failed.') }
+    finally { setBusy(false) }
   }
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setDragOver(false)
-    const file = e.dataTransfer.files[0]
-    if (file) setSelectedFile(file)
-  }
-
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) setSelectedFile(f) }
   const hasPending = imports.some((i) => i.status === 'processing' || i.status === 'queued')
 
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <h2>Imports</h2>
-          <p className="page-desc">Upload provider exports (.zip or .json)</p>
-        </div>
-      </header>
-
+    <PageShell title="Imports" desc="Upload provider exports (.zip or .json)">
       <form onSubmit={onSubmit}>
         <div
-          className={`upload-zone${dragOver ? ' drag-over' : ''}`}
+          className={cn('upload-drop border-2 border-dashed rounded-lg p-8 text-center mb-4 transition-colors', dragOver ? 'border-indigo-400 bg-indigo-50' : 'border-zinc-300 hover:border-zinc-400')}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
         >
-          <label>
-            <span className="upload-title">
-              {selectedFile ? selectedFile.name : 'Drop file here or click to browse'}
-            </span>
-            <span className="upload-hint">ChatGPT, Claude, and Gemini exports supported</span>
-            <input
-              type="file"
-              accept=".zip,.json"
-              onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-            />
+          <label className="flex flex-col items-center gap-2 cursor-pointer">
+            <ArrowUpFromLine className="w-6 h-6 text-zinc-400" />
+            <span className="text-sm font-medium">{selectedFile ? selectedFile.name : 'Drop file here or click to browse'}</span>
+            <span className="text-xs text-zinc-400">ChatGPT, Claude, and Gemini exports supported</span>
+            <input type="file" accept=".zip,.json" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} className="text-xs text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-zinc-200 file:bg-white file:text-zinc-600 file:font-medium file:text-xs file:cursor-pointer" />
           </label>
-          <div className="upload-actions">
-            <button className="btn btn-primary" type="submit" disabled={busy || !selectedFile}>
-              {busy ? 'Uploading...' : 'Upload'}
-            </button>
+          <div className="flex items-center gap-3 mt-3 justify-center">
+            <Btn type="submit" disabled={busy || !selectedFile}>
+              {busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Uploading...</> : 'Upload'}
+            </Btn>
           </div>
         </div>
-        {error && <p className="error-text" style={{ marginBottom: '1rem' }}>{error}</p>}
+        {error && <p className="text-red-600 text-[0.8125rem] mb-4">{error}</p>}
       </form>
 
-      <div className="panel">
-        <div className="panel-header">
-          <h3>History</h3>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            {hasPending && <span className="badge badge-status badge-processing">Processing</span>}
-            <button className="btn btn-ghost" type="button" onClick={() => void loadImports()}>Refresh</button>
+      <Panel
+        title="History"
+        action={
+          <div className="flex items-center gap-2">
+            {hasPending && <Badge variant="processing">Processing</Badge>}
+            <Btn variant="ghost" onClick={() => void loadImports()}>Refresh</Btn>
           </div>
-        </div>
-        <div className="panel-body">
-          <ImportList items={imports} />
-        </div>
-      </div>
-    </div>
+        }
+      >
+        <ImportList items={imports} />
+      </Panel>
+    </PageShell>
   )
 }
 
-// ── Conversations (debounced search, provider chips with counts) ──
+// ── Conversations (debounced search + provider chips with counts) ──
 
 const PAGE_SIZE = 50
 const DEBOUNCE_MS = 300
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(id)
-  }, [value, delay])
+  useEffect(() => { const id = setTimeout(() => setDebounced(value), delay); return () => clearTimeout(id) }, [value, delay])
   return debounced
 }
 
@@ -499,7 +493,6 @@ function ConversationsPage() {
   const isSearch = debouncedQuery.trim().length > 0
   const initialLoadDone = useRef(false)
 
-  // Fetch provider counts once
   useEffect(() => {
     api.getDashboard().then((d) => {
       const counts: Record<string, number> = {}
@@ -511,53 +504,27 @@ function ConversationsPage() {
   const load = useCallback(async (prov: string, q: string) => {
     setBusy(true)
     try {
-      if (q.trim()) {
-        const result = await api.searchConversations(q.trim(), prov || undefined, PAGE_SIZE)
-        setItems(result)
-        setHasMore(false)
-      } else {
-        const result = await api.listConversations(prov || undefined, PAGE_SIZE, 0)
-        setItems(result)
-        setHasMore(result.length >= PAGE_SIZE)
-      }
+      if (q.trim()) { const r = await api.searchConversations(q.trim(), prov || undefined, PAGE_SIZE); setItems(r); setHasMore(false) }
+      else { const r = await api.listConversations(prov || undefined, PAGE_SIZE, 0); setItems(r); setHasMore(r.length >= PAGE_SIZE) }
       setError('')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load conversations.')
-    } finally {
-      setBusy(false)
-    }
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not load conversations.') }
+    finally { setBusy(false) }
   }, [])
 
-  // React to debounced query or provider changes
-  useEffect(() => {
-    // Skip the very first render — we handle that with the initial load below
-    if (!initialLoadDone.current) return
-    void load(provider, debouncedQuery)
-  }, [debouncedQuery, provider, load])
-
-  // Initial load
-  useEffect(() => {
-    void load(provider, debouncedQuery).then(() => { initialLoadDone.current = true })
-  }, [])
+  useEffect(() => { if (!initialLoadDone.current) return; void load(provider, debouncedQuery) }, [debouncedQuery, provider, load])
+  useEffect(() => { void load(provider, debouncedQuery).then(() => { initialLoadDone.current = true }) }, [])
 
   const loadMore = async () => {
     if (isSearch || loadingMore) return
     setLoadingMore(true)
-    try {
-      const result = await api.listConversations(provider || undefined, PAGE_SIZE, items.length)
-      setItems((prev) => [...prev, ...result])
-      setHasMore(result.length >= PAGE_SIZE)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load more.')
-    } finally {
-      setLoadingMore(false)
-    }
+    try { const r = await api.listConversations(provider || undefined, PAGE_SIZE, items.length); setItems((prev) => [...prev, ...r]); setHasMore(r.length >= PAGE_SIZE) }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not load more.') }
+    finally { setLoadingMore(false) }
   }
 
   const toggleProvider = (p: string) => {
     const next = provider === p ? '' : p
     setProvider(next)
-    // Update URL without navigation
     const params = new URLSearchParams(searchParams)
     if (next) params.set('provider', next); else params.delete('provider')
     setSearchParams(params, { replace: true })
@@ -573,69 +540,64 @@ function ConversationsPage() {
   const knownProviders = ['chatgpt', 'claude', 'gemini'] as const
 
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <h2>Conversations</h2>
-        </div>
-      </header>
-
-      <div className="toolbar">
-        <div className="field" style={{ flex: 1 }}>
-          <input
-            value={query}
-            onChange={(e) => handleQueryChange(e.target.value)}
-            placeholder="Search messages..."
-          />
-        </div>
-        {busy && <span className="muted" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Searching...</span>}
+    <PageShell title="Conversations">
+      {/* Search bar */}
+      <div className="relative mb-3">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
+        <input
+          value={query}
+          onChange={(e) => handleQueryChange(e.target.value)}
+          placeholder="Search messages..."
+          className="input pl-9 pr-10"
+        />
+        {busy && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 animate-spin" />}
       </div>
 
-      <div className="provider-chips">
+      {/* Provider chips */}
+      <div className="flex items-center gap-1.5 mb-3">
         {knownProviders.map((p) => (
           <button
             key={p}
             type="button"
-            className={`chip ${provider === p ? 'chip-active' : ''}`}
             onClick={() => toggleProvider(p)}
+            className={cn(
+              'inline-flex items-center gap-1.5 border rounded-full px-1 py-0.5 transition-all cursor-pointer',
+              provider === p
+                ? 'border-indigo-300 bg-indigo-50 opacity-100'
+                : 'border-zinc-200 opacity-50 hover:opacity-80',
+            )}
           >
             <ProviderBadge provider={p} />
             {providerCounts[p] != null && (
-              <span className="chip-count">{providerCounts[p].toLocaleString()}</span>
+              <span className={cn('text-2xs tabular-nums pr-1', provider === p ? 'text-indigo-600' : 'text-zinc-400')}>
+                {providerCounts[p].toLocaleString()}
+              </span>
             )}
           </button>
         ))}
-        {provider && (
-          <button type="button" className="btn btn-ghost" style={{ fontSize: '0.75rem' }} onClick={() => toggleProvider(provider)}>
-            Clear filter
-          </button>
-        )}
+        {provider && <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => toggleProvider(provider)}>Clear</Btn>}
       </div>
 
-      <div className="panel">
-        <div className="panel-header">
-          <h3>{isSearch ? `Results for "${debouncedQuery.trim()}"` : `All conversations`}</h3>
-          <span className="muted" style={{ fontSize: '0.75rem' }}>
-            {items.length} shown{hasMore ? '+' : ''}
-          </span>
-        </div>
-        <div className="panel-body">
-          {error && <p className="error-text" style={{ padding: '0.75rem 1rem' }}>{error}</p>}
-          <ConversationList items={items} showSnippet={isSearch} searchQuery={isSearch ? debouncedQuery.trim() : undefined} />
-          {hasMore && (
-            <div className="load-more">
-              <button className="btn btn-secondary" type="button" onClick={() => void loadMore()} disabled={loadingMore}>
-                {loadingMore ? 'Loading...' : 'Load more conversations'}
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+      {/* Results */}
+      <Panel
+        title={isSearch ? `Results for "${debouncedQuery.trim()}"` : 'All conversations'}
+        action={<span className="text-xs text-zinc-400 tabular-nums">{items.length}{hasMore ? '+' : ''}</span>}
+      >
+        {error && <p className="text-red-600 text-[0.8125rem] px-4 py-3">{error}</p>}
+        <ConversationList items={items} showSnippet={isSearch} searchQuery={isSearch ? debouncedQuery.trim() : undefined} />
+        {hasMore && (
+          <div className="px-4 py-3 border-t border-zinc-100 text-center">
+            <Btn variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
+              {loadingMore ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading...</> : 'Load more'}
+            </Btn>
+          </div>
+        )}
+      </Panel>
+    </PageShell>
   )
 }
 
-// ── Conversation detail (with markdown + search highlight) ──
+// ── Conversation detail ──
 
 function ConversationDetailPage() {
   const { conversationId } = useParams()
@@ -652,62 +614,48 @@ function ConversationDetailPage() {
     api.getConversation(conversationId).then(setConversation).catch((err: Error) => setError(err.message))
   }, [conversationId])
 
-  // After render, scroll to first highlighted match
   useEffect(() => {
     if (!conversation || !highlightQuery || scrolledRef.current) return
     scrolledRef.current = true
-    // Wait a tick for DOM to render
     requestAnimationFrame(() => {
-      const firstMatch = document.querySelector('.search-highlight')
-      if (firstMatch) {
-        firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }
+      document.querySelector('.search-hl')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     })
   }, [conversation, highlightQuery])
 
-  if (error) return <PageState title="Error" message={error} />
-  if (!conversation) return <PageState title="Loading" message="Fetching conversation..." />
+  if (error) return <PageShell title="Error"><p className="text-red-600 text-[0.8125rem]">{error}</p></PageShell>
+  if (!conversation) return <PageShell title="Conversation"><p className="text-zinc-400 text-[0.8125rem]">Loading...</p></PageShell>
 
-  const backTo = highlightQuery
-    ? `/?q=${encodeURIComponent(highlightQuery)}`
-    : '/'
+  const backTo = highlightQuery ? `/?q=${encodeURIComponent(highlightQuery)}` : '/'
 
   return (
-    <div className="page page-wide">
-      <button className="back-link btn btn-ghost" onClick={() => navigate(backTo)} type="button" style={{ marginBottom: '0.75rem', padding: '0.25rem 0.375rem' }}>
-        {icons.back} Back to {highlightQuery ? 'results' : 'conversations'}
-      </button>
+    <div className="max-w-[1100px] mx-auto px-6 py-6 pb-12">
+      <Btn variant="ghost" onClick={() => navigate(backTo)} className="mb-3 -ml-2 text-xs">
+        <ChevronLeft className="w-3.5 h-3.5" /> Back to {highlightQuery ? 'results' : 'conversations'}
+      </Btn>
 
-      <div className="detail-header">
-        <h2>{conversation.title}</h2>
+      <div className="flex items-center gap-3 mb-3">
+        <h2 className="text-lg font-semibold tracking-tight flex-1 min-w-0 truncate">{conversation.title}</h2>
         <ProviderBadge provider={conversation.provider} />
       </div>
 
-      <div className="detail-meta">
-        <dl style={{ margin: 0 }}>
-          <dt>Created</dt>
-          <dd>{formatDateShort(conversation.created_at)}</dd>
-        </dl>
-        <dl style={{ margin: 0 }}>
-          <dt>Updated</dt>
-          <dd>{formatDateShort(conversation.updated_at)}</dd>
-        </dl>
-        <dl style={{ margin: 0 }}>
-          <dt>Messages</dt>
-          <dd>{conversation.messages.length}</dd>
-        </dl>
-        <dl style={{ margin: 0 }}>
-          <dt>Source</dt>
-          <dd>{conversation.source_import?.original_filename ?? 'Unknown'}</dd>
-        </dl>
+      <div className="flex gap-6 px-4 py-3 mb-4 bg-zinc-50 border border-zinc-200 rounded-lg text-xs">
+        {[
+          { label: 'Created', value: formatDateShort(conversation.created_at) },
+          { label: 'Updated', value: formatDateShort(conversation.updated_at) },
+          { label: 'Messages', value: String(conversation.messages.length) },
+          { label: 'Source', value: conversation.source_import?.original_filename ?? 'Unknown' },
+        ].map(({ label, value }) => (
+          <dl key={label} className="m-0">
+            <dt className="text-2xs font-semibold uppercase tracking-wider text-zinc-400">{label}</dt>
+            <dd className="mt-0.5 text-zinc-700">{value}</dd>
+          </dl>
+        ))}
       </div>
 
-      <div className="panel">
-        <div className="message-thread">
-          {conversation.messages.map((msg) => (
-            <MessageBlock key={msg.id} msg={msg} highlightQuery={highlightQuery} />
-          ))}
-        </div>
+      <div className="border border-zinc-200 rounded-lg overflow-hidden">
+        {conversation.messages.map((msg) => (
+          <MessageBlock key={msg.id} msg={msg} highlightQuery={highlightQuery} />
+        ))}
       </div>
     </div>
   )
@@ -718,21 +666,19 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
   const highlighted = highlightQuery ? highlightHtml(html, highlightQuery) : html
 
   return (
-    <div className={`message-block ${msg.role === 'assistant' ? 'message-block-assistant' : ''}`}>
-      <div className="message-header">
-        <span className={`role-marker role-${msg.role}`}>{msg.role}</span>
-        <span className="message-author">{msg.author_name || roleDisplayName(msg.role)}</span>
-        <span className="message-info" title={formatDateFull(msg.created_at)}>
+    <div className={cn('px-5 py-4 border-b border-zinc-100 last:border-b-0', msg.role === 'assistant' && 'bg-zinc-50/70')}>
+      <div className="flex items-center gap-2 mb-2">
+        <RoleMarker role={msg.role} />
+        <span className="text-[0.8125rem] font-semibold">{msg.author_name || roleDisplayName(msg.role)}</span>
+        <span className="text-2xs text-zinc-400 font-mono" title={formatDateFull(msg.created_at)}>
           #{msg.sequence}{msg.created_at ? ` · ${timeAgo(msg.created_at)}` : ''}{msg.model ? ` · ${msg.model}` : ''}
         </span>
       </div>
-      <div className="message-body markdown-body" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlighted }} />
       {msg.attachments.length > 0 && (
-        <div className="attachments-section">
-          <div className="attachments-label">Attachments</div>
-          {msg.attachments.map((att) => (
-            <AttachmentItem key={att.id} attachment={att} />
-          ))}
+        <div className="mt-3 pt-3 border-t border-zinc-200">
+          <p className="text-2xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Attachments</p>
+          {msg.attachments.map((att) => <AttachmentItem key={att.id} attachment={att} />)}
         </div>
       )}
     </div>
@@ -746,105 +692,76 @@ function SettingsPage() {
   const [newPassword, setNewPassword] = useState('')
   const [status, setStatus] = useState('')
 
-  const onSubmit = async (event: FormEvent) => {
-    event.preventDefault()
-    setStatus('')
-    try {
-      await api.changePassword(currentPassword, newPassword)
-      setCurrentPassword('')
-      setNewPassword('')
-      setStatus('Password updated.')
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : 'Could not update the password.')
-    }
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault(); setStatus('')
+    try { await api.changePassword(currentPassword, newPassword); setCurrentPassword(''); setNewPassword(''); setStatus('Password updated.') }
+    catch (err) { setStatus(err instanceof Error ? err.message : 'Could not update the password.') }
   }
 
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <h2>Settings</h2>
-        </div>
-      </header>
-
-      <div className="panel">
-        <div className="panel-header">
-          <h3>Change password</h3>
-        </div>
-        <div className="panel-body-pad">
-          <form className="settings-form form-grid" onSubmit={onSubmit}>
-            <label>
-              Current password
-              <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
-            </label>
-            <label>
-              New password
-              <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
-            </label>
-            <div className="form-actions">
-              <button className="btn btn-primary" type="submit">Save</button>
-              {status && <p className={status === 'Password updated.' ? 'success-text' : 'error-text'}>{status}</p>}
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
+    <PageShell title="Settings">
+      <Panel title="Change password">
+        <form className="grid gap-3 max-w-sm p-4" onSubmit={onSubmit}>
+          <FieldLabel label="Current password"><input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required className="input" /></FieldLabel>
+          <FieldLabel label="New password"><input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required className="input" /></FieldLabel>
+          <div className="flex items-center gap-3 mt-1">
+            <Btn type="submit">Save</Btn>
+            {status && <p className={cn('text-[0.8125rem]', status === 'Password updated.' ? 'text-emerald-600' : 'text-red-600')}>{status}</p>}
+          </div>
+        </form>
+      </Panel>
+    </PageShell>
   )
 }
 
-// ── Shared components ──
+// ── Layout primitives ──
 
-function PageState({ title, message }: { title: string; message: string }) {
+function PageShell({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <h2>{title}</h2>
-          <p className="page-desc">{message}</p>
-        </div>
-      </header>
+    <div className="max-w-[960px] mx-auto px-6 py-6 pb-12">
+      <div className="mb-5">
+        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+        {desc && <p className="text-[0.8125rem] text-zinc-500 mt-0.5">{desc}</p>}
+      </div>
+      {children}
     </div>
   )
 }
 
-function ProviderBadge({ provider }: { provider: string }) {
-  const p = provider.toLowerCase()
-  let cls = 'badge badge-default'
-  if (p.includes('chatgpt') || p.includes('openai')) cls = 'badge badge-chatgpt'
-  else if (p.includes('claude') || p.includes('anthropic')) cls = 'badge badge-claude'
-  else if (p.includes('gemini') || p.includes('google')) cls = 'badge badge-gemini'
-  return <span className={cls}>{provider}</span>
+function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="border border-zinc-200 rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-200 bg-zinc-50/50">
+        <h3 className="text-[0.8125rem] font-semibold">{title}</h3>
+        {action}
+      </div>
+      <div>{children}</div>
+    </div>
+  )
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const s = status.toLowerCase()
-  let cls = 'badge badge-status badge-default'
-  if (s === 'completed') cls = 'badge badge-status badge-completed'
-  else if (s === 'failed') cls = 'badge badge-status badge-failed'
-  else if (s === 'processing' || s === 'queued') cls = 'badge badge-status badge-processing'
-  return <span className={cls}>{status}</span>
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return <div className="py-10 px-4 text-center text-[0.8125rem] text-zinc-400">{children}</div>
 }
+
+// ── Data display components ──
 
 function ImportList({ items, compact = false }: { items: ImportRecord[]; compact?: boolean }) {
-  if (!items.length) {
-    return <div className="empty-state">No imports</div>
-  }
+  if (!items.length) return <EmptyState>No imports</EmptyState>
 
   return (
     <div>
       {items.map((item) => (
-        <div className="import-row" key={item.id}>
-          <span className="import-filename">{item.original_filename}</span>
+        <div key={item.id} className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-0.5 items-center px-4 py-2.5 border-b border-zinc-100 last:border-b-0 text-[0.8125rem]">
+          <span className="font-medium truncate">{item.original_filename}</span>
           <ProviderBadge provider={item.provider} />
           <StatusBadge status={item.status} />
-          <span className="import-meta" title={formatDateFull(item.created_at)}>{timeAgo(item.created_at)}</span>
+          <span className="text-xs text-zinc-400 col-span-1" title={formatDateFull(item.created_at)}>{timeAgo(item.created_at)}</span>
           {!compact && (
             <>
-              <span className="import-stats">
-                {item.summary.inserted_messages ?? 0} msgs · {item.summary.inserted_attachments ?? 0} attachments · {item.summary.duplicate_messages ?? 0} dupes
-              </span>
-              {item.error && <span className="import-error">{item.error}</span>}
-              {item.warnings.length > 0 && <span className="import-warnings">{item.warnings.join(' | ')}</span>}
+              <span className="text-xs text-zinc-400 col-span-full">{item.summary.inserted_messages ?? 0} msgs · {item.summary.inserted_attachments ?? 0} attachments · {item.summary.duplicate_messages ?? 0} dupes</span>
+              {item.error && <span className="text-xs text-red-600 col-span-full">{item.error}</span>}
+              {item.warnings.length > 0 && <span className="text-xs text-amber-600 col-span-full">{item.warnings.join(' | ')}</span>}
             </>
           )}
         </div>
@@ -855,26 +772,26 @@ function ImportList({ items, compact = false }: { items: ImportRecord[]; compact
 
 function ConversationList({ items, showSnippet = false, searchQuery }: { items: Array<ConversationListItem & { snippet?: string }>; showSnippet?: boolean; searchQuery?: string }) {
   const navigate = useNavigate()
-
-  if (!items.length) {
-    return <div className="empty-state">{showSnippet ? 'No matching conversations' : 'No conversations'}</div>
-  }
+  if (!items.length) return <EmptyState>{showSnippet ? 'No matching conversations' : 'No conversations'}</EmptyState>
 
   return (
     <div>
       {items.map((item) => {
-        const target = searchQuery
-          ? `/conversations/${item.id}?q=${encodeURIComponent(searchQuery)}`
-          : `/conversations/${item.id}`
+        const target = searchQuery ? `/conversations/${item.id}?q=${encodeURIComponent(searchQuery)}` : `/conversations/${item.id}`
         return (
-          <button className="conv-row" key={item.id} type="button" onClick={() => navigate(target)}>
-            <span className="conv-title">{item.title}</span>
-            <span className="conv-badge"><ProviderBadge provider={item.provider} /></span>
-            <span className="conv-meta" title={formatDateFull(item.updated_at || item.last_message_at)}>
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => navigate(target)}
+            className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 w-full px-4 py-2.5 border-b border-zinc-100 last:border-b-0 text-left hover:bg-zinc-50 transition-colors cursor-pointer"
+          >
+            <span className="text-[0.8125rem] font-medium truncate">{item.title}</span>
+            <span className="row-span-2 self-center"><ProviderBadge provider={item.provider} /></span>
+            <span className="text-xs text-zinc-400 truncate" title={formatDateFull(item.updated_at || item.last_message_at)}>
               {item.message_count} msgs · {timeAgo(item.updated_at || item.last_message_at)}
             </span>
             {showSnippet && item.snippet && (
-              <span className="conv-snippet" dangerouslySetInnerHTML={{ __html: item.snippet }} />
+              <span className="col-span-full text-xs text-zinc-500 mt-0.5 leading-snug [&_mark]:bg-yellow-200 [&_mark]:text-zinc-900 [&_mark]:rounded-sm [&_mark]:px-px [&_em]:bg-yellow-200 [&_em]:not-italic [&_em]:text-zinc-900 [&_em]:rounded-sm [&_em]:px-px" dangerouslySetInnerHTML={{ __html: item.snippet }} />
             )}
           </button>
         )
@@ -890,20 +807,23 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
 
   return (
     <>
-      <div className="attachment-chip">
-        <div>
-          <span className="att-name">{attachment.filename}</span>
-          <span className="att-info" style={{ marginLeft: '0.5rem' }}>{info}</span>
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border border-zinc-200 rounded-md bg-white mb-1.5 text-[0.8125rem]">
+        <div className="flex items-center gap-2 min-w-0">
+          <Paperclip className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+          <span className="font-medium truncate">{attachment.filename}</span>
+          {info && <span className="text-xs text-zinc-400 truncate">{info}</span>}
         </div>
         {preview ? (
-          <button className="btn btn-ghost" type="button" onClick={() => setOpen((v) => !v)}>
-            {open ? 'Hide' : 'View'}
-          </button>
+          <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => setOpen((v) => !v)}>
+            {open ? <><EyeOff className="w-3 h-3" /> Hide</> : <><Eye className="w-3 h-3" /> View</>}
+          </Btn>
         ) : (
-          <span className="att-info">No text content</span>
+          <span className="text-xs text-zinc-400 shrink-0">No text</span>
         )}
       </div>
-      {open && preview && <pre className="attachment-preview">{preview}</pre>}
+      {open && preview && (
+        <pre className="mb-1.5 p-3 rounded-md bg-zinc-100 border border-zinc-200 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed max-h-[300px] overflow-y-auto">{preview}</pre>
+      )}
     </>
   )
 }
@@ -938,23 +858,12 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
-/**
- * Highlight search terms in already-rendered HTML.
- * Walks text nodes only (skips tags) to avoid breaking markup.
- */
 function highlightHtml(html: string, query: string): string {
   if (!query) return html
-  // Escape regex special chars in the query
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Split HTML into tags and text segments
   const parts = html.split(/(<[^>]*>)/g)
   const re = new RegExp(`(${escaped})`, 'gi')
-  return parts.map((part) => {
-    // If it's a tag, leave it alone
-    if (part.startsWith('<')) return part
-    // Replace matches in text content
-    return part.replace(re, '<mark class="search-highlight">$1</mark>')
-  }).join('')
+  return parts.map((part) => part.startsWith('<') ? part : part.replace(re, '<mark class="search-hl">$1</mark>')).join('')
 }
 
 export default App
