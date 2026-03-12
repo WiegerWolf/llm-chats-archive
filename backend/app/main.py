@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from .adapters import ImportParseError, parse_export
+from .adapters import ImportParseError, derive_kimi_model, fallback_assistant_model, parse_export
 from .db import (
     BLOBS_DIR,
     RAW_DIR,
@@ -62,12 +62,57 @@ class ChangePasswordPayload(BaseModel):
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    backfill_message_models()
 
 
 def json_or_none(value: str | None) -> object:
     if not value:
         return None
     return json.loads(value)
+
+
+def backfill_message_models() -> None:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT m.id, c.provider, m.role, m.model, m.content_json, m.metadata_json
+            FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE m.role = 'assistant' AND (m.model IS NULL OR TRIM(m.model) = '')
+            """
+        ).fetchall()
+
+        updates: list[tuple[str, int]] = []
+        for row in rows:
+            provider = str(row["provider"] or "").strip().lower()
+            model = derive_missing_message_model(
+                provider,
+                str(row["role"] or "").strip().lower(),
+                row["content_json"],
+                row["metadata_json"],
+            )
+            if model:
+                updates.append((model, int(row["id"])))
+
+        if updates:
+            conn.executemany("UPDATE messages SET model = ? WHERE id = ?", updates)
+            conn.commit()
+
+
+def derive_missing_message_model(provider: str, role: str, content_json: str | None, metadata_json: str | None) -> str | None:
+    if role != "assistant":
+        return None
+
+    content = json_or_none(content_json) if content_json else None
+    metadata = json_or_none(metadata_json) if metadata_json else None
+    content_dict = content if isinstance(content, dict) else {}
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+
+    if provider == "claude":
+        return fallback_assistant_model(provider, role)
+    if provider == "kimi":
+        return derive_kimi_model(content_dict, metadata_dict, role, content_dict)
+    return None
 
 
 def sanitize_filename(name: str) -> str:

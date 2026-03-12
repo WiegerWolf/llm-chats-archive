@@ -289,6 +289,7 @@ def parse_claude_export(export_path: Path) -> dict[str, Any]:
             if not isinstance(raw_message, dict):
                 continue
 
+            role = normalize_role(raw_message.get("sender"))
             text = flatten_claude_message(raw_message)
             attachments = extract_claude_attachments(raw_message)
             if not text.strip() and not attachments:
@@ -297,9 +298,9 @@ def parse_claude_export(export_path: Path) -> dict[str, Any]:
             messages.append(
                 {
                     "provider_message_id": raw_message.get("uuid"),
-                    "role": normalize_role(raw_message.get("sender")),
+                    "role": role,
                     "author_name": claude_author_name(raw_message.get("sender")),
-                    "model": None,
+                    "model": fallback_assistant_model("claude", role),
                     "created_at": iso_timestamp(raw_message.get("created_at")),
                     "text": text.strip() or format_attachment_lines(attachments),
                     "content": {
@@ -1133,7 +1134,7 @@ def normalize_exported_kimi_message(raw_message: dict[str, Any]) -> dict[str, An
         "provider_message_id": extract_first(raw_message, ["provider_message_id", "message_id", "msg_id", "id", "uuid"]),
         "role": role,
         "author_name": raw_message.get("author_name") or ("You" if role == "user" else "Kimi" if role == "assistant" else None),
-        "model": extract_first(raw_message, ["model", "model_name"]),
+        "model": derive_kimi_model(raw_message, metadata, role, content),
         "created_at": extract_timestamp(raw_message, ["created_at", "create_time", "createTime", "timestamp", "time", "updated_at", "updateTime"]),
         "text": text or format_attachment_lines(attachments),
         "content": content,
@@ -1187,7 +1188,7 @@ def normalize_kimi_message(raw_message: dict[str, Any]) -> dict[str, Any] | None
         "provider_message_id": extract_first(raw_message, ["message_id", "msg_id", "id", "uuid"]),
         "role": role,
         "author_name": author_name,
-        "model": extract_first(raw_message, ["model", "model_name"]),
+        "model": derive_kimi_model(raw_message, metadata, role, raw_message),
         "created_at": extract_timestamp(raw_message, ["created_at", "create_time", "timestamp", "time", "updated_at"]),
         "text": text or format_attachment_lines(attachments),
         "content": raw_message,
@@ -1553,6 +1554,138 @@ def extract_nested(candidate: dict[str, Any], path: list[str]) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+def fallback_assistant_model(provider: str, role: str) -> str | None:
+    if role != "assistant":
+        return None
+    labels = {
+        "claude": "Claude (model unavailable)",
+        "kimi": "Kimi (model unavailable)",
+    }
+    return labels.get(provider)
+
+
+def derive_kimi_model(
+    raw_message: dict[str, Any] | None,
+    metadata: dict[str, Any] | None,
+    role: str,
+    content: dict[str, Any] | None = None,
+) -> str | None:
+    if role != "assistant":
+        return None
+
+    raw_message_dict: dict[str, Any] = {}
+    if isinstance(raw_message, dict):
+        raw_message_dict = raw_message
+
+    metadata_dict: dict[str, Any] = {}
+    if isinstance(metadata, dict):
+        metadata_dict = metadata
+
+    content_dict: dict[str, Any] = {}
+    if isinstance(content, dict):
+        content_dict = content
+
+    nested_raw: dict[str, Any] = {}
+    raw_content = content_dict.get("raw")
+    if isinstance(raw_content, dict):
+        nested_raw = raw_content
+
+    explicit_model = (
+        extract_first(raw_message_dict, ["model", "model_name"])
+        or metadata_dict.get("model")
+        or extract_first(nested_raw, ["model", "model_name"])
+    )
+    if explicit_model not in (None, ""):
+        return str(explicit_model).strip()
+
+    scenario = str(
+        extract_first(raw_message_dict, ["scenario"])
+        or metadata_dict.get("scenario")
+        or extract_first(nested_raw, ["scenario"])
+        or ""
+    ).strip()
+    kimi_plus = first_dict(
+        raw_message_dict.get("kimiPlus"),
+        metadata_dict.get("kimi_plus"),
+        nested_raw.get("kimiPlus"),
+        extract_nested(content_dict, ["raw", "kimiPlus"]),
+    )
+    thinking = first_bool(
+        extract_nested(raw_message_dict, ["lastRequest", "options", "thinking"]),
+        extract_nested(content_dict, ["raw", "lastRequest", "options", "thinking"]),
+        metadata_dict.get("thinking"),
+    )
+    if thinking is None:
+        thinking = kimi_metadata_implies_thinking(metadata_dict) or kimi_metadata_implies_thinking(nested_raw)
+
+    agent_mode = str((kimi_plus or {}).get("agentMode") or "").strip().upper()
+
+    if scenario == "SCENARIO_DEEP_RESEARCH":
+        return "Deep Research"
+    if scenario == "SCENARIO_OK_COMPUTER":
+        if agent_mode == "TYPE_ULTRA":
+            return "K2.5 Agent Swarm"
+        return "K2.5 Agent"
+    if scenario == "SCENARIO_K2D5":
+        if thinking is True:
+            return "K2.5 Thinking"
+        return "K2.5 Instant"
+
+    kimi_plus_name = str((kimi_plus or {}).get("name") or "").strip()
+    if kimi_plus_name:
+        return kimi_plus_name
+    if thinking is True:
+        return "K2.5 Thinking"
+
+    return fallback_assistant_model("kimi", role)
+
+
+def first_dict(*values: Any) -> dict[str, Any] | None:
+    for value in values:
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def first_bool(*values: Any) -> bool | None:
+    for value in values:
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def kimi_metadata_implies_thinking(candidate: Any) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+
+    blocks = candidate.get("blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            kind = str(block.get("kind") or "").strip().lower()
+            if kind == "think":
+                return True
+            stages = block.get("stages")
+            if isinstance(stages, list):
+                for stage in stages:
+                    if not isinstance(stage, dict):
+                        continue
+                    name = str(stage.get("name") or "").strip().upper()
+                    if name == "STAGE_NAME_THINKING":
+                        return True
+
+    stages = candidate.get("stages")
+    if isinstance(stages, list):
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+            name = str(stage.get("name") or "").strip().upper()
+            if name == "STAGE_NAME_THINKING":
+                return True
+    return False
 
 
 def flatten_text(value: Any) -> str:
