@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type SessionState } from './api'
 
@@ -20,7 +20,7 @@ function App() {
   }, [])
 
   if (!session) {
-    return <FullScreenMessage title="Loading archive" message={error || 'Checking the application state.'} />
+    return <FullScreenMessage title="Loading" message={error || 'Connecting to archive...'} />
   }
 
   if (session.needs_setup) {
@@ -42,9 +42,9 @@ function FullScreenMessage({ title, message }: { title: string; message: string 
   return (
     <div className="auth-screen">
       <div className="auth-panel">
-        <p className="panel-kicker">Unified Chat Archive</p>
+        <p className="panel-kicker">Chat Archive</p>
         <h1>{title}</h1>
-        <p className="muted">{message}</p>
+        <p className="muted" style={{ margin: 0, fontSize: '0.8125rem' }}>{message}</p>
       </div>
     </div>
   )
@@ -78,18 +78,18 @@ function SetupPage({ onComplete }: { onComplete: () => Promise<void> }) {
     <div className="auth-screen">
       <form className="auth-panel" onSubmit={onSubmit}>
         <p className="panel-kicker">First-run setup</p>
-        <h1>Set the archive password</h1>
-        <p className="muted">This app is single-user and LAN-only. Pick one password with at least 12 characters.</p>
+        <h1>Create password</h1>
+        <p className="muted" style={{ margin: 0, fontSize: '0.8125rem' }}>Single-user, LAN-only. Minimum 12 characters.</p>
         <label>
           Password
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </label>
         <label>
-          Confirm password
-          <input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required />
+          Confirm
+          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
         </label>
-        {error ? <p className="error-text">{error}</p> : null}
-        <button type="submit" disabled={busy}>{busy ? 'Saving...' : 'Create archive password'}</button>
+        {error && <p className="error-text">{error}</p>}
+        <button type="submit" disabled={busy}>{busy ? 'Saving...' : 'Set password'}</button>
       </form>
     </div>
   )
@@ -108,7 +108,7 @@ function LoginPage({ onLogin }: { onLogin: () => Promise<void> }) {
       await api.login(password)
       await onLogin()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not log in.')
+      setError(err instanceof Error ? err.message : 'Login failed.')
     } finally {
       setBusy(false)
     }
@@ -117,18 +117,28 @@ function LoginPage({ onLogin }: { onLogin: () => Promise<void> }) {
   return (
     <div className="auth-screen">
       <form className="auth-panel" onSubmit={onSubmit}>
-        <p className="panel-kicker">Welcome back</p>
-        <h1>Open your archive</h1>
-        <p className="muted">Use the app password you created during setup.</p>
+        <p className="panel-kicker">Chat Archive</p>
+        <h1>Sign in</h1>
         <label>
           Password
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
         </label>
-        {error ? <p className="error-text">{error}</p> : null}
+        {error && <p className="error-text">{error}</p>}
         <button type="submit" disabled={busy}>{busy ? 'Signing in...' : 'Sign in'}</button>
       </form>
     </div>
   )
+}
+
+// ── SVG icons (inline, tiny) ──
+
+const icons = {
+  dashboard: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v6H2V2zm7 0h5v4H9V2zM2 10h5v4H2v-4zm7-2h5v6H9V8z"/></svg>,
+  imports: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v8.5m0 0L5 6.5m3 3L11 6.5M3 11v2h10v-2"/></svg>,
+  conversations: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v8H5l-3 3V3z"/></svg>,
+  settings: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 10a2 2 0 100-4 2 2 0 000 4zm6-1.5h-1.17a4.98 4.98 0 00-.42-1.01l.83-.83-1.5-1.5-.83.83a4.98 4.98 0 00-1.01-.42V4.5h-2v1.07c-.36.09-.7.23-1.01.42l-.83-.83-1.5 1.5.83.83c-.19.31-.33.65-.42 1.01H4v2h1.07c.09.36.23.7.42 1.01l-.83.83 1.5 1.5.83-.83c.31.19.65.33 1.01.42V13h2v-1.07c.36-.09.7-.23 1.01-.42l.83.83 1.5-1.5-.83-.83c.19-.31.33-.65.42-1.01H14v-2z"/></svg>,
+  logout: <svg className="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M6 2H3v12h3m4-6h5m0 0l-2-2m2 2l-2 2"/></svg>,
+  back: <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3L5 8l5 5"/></svg>,
 }
 
 function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
@@ -143,19 +153,21 @@ function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div>
-          <p className="panel-kicker">Unified Chat Archive</p>
-          <h1 className="sidebar-title">Paper trail for AI chats</h1>
+        <div className="sidebar-brand">
+          <h1>Chat Archive</h1>
+          <p>Unified LLM export viewer</p>
         </div>
         <nav className="sidebar-nav">
-          <NavLink to="/">Dashboard</NavLink>
-          <NavLink to="/imports">Imports</NavLink>
-          <NavLink to="/conversations">Conversations</NavLink>
-          <NavLink to="/settings">Settings</NavLink>
+          <NavLink to="/" end>{icons.dashboard} Dashboard</NavLink>
+          <NavLink to="/imports">{icons.imports} Imports</NavLink>
+          <NavLink to="/conversations">{icons.conversations} Conversations</NavLink>
+          <NavLink to="/settings">{icons.settings} Settings</NavLink>
         </nav>
-        <button className="secondary-button" type="button" onClick={() => void logout()}>
-          Log out
-        </button>
+        <div className="sidebar-footer">
+          <button className="btn btn-ghost" type="button" onClick={() => void logout()} style={{ color: 'var(--sidebar-text)', width: '100%', justifyContent: 'flex-start' }}>
+            {icons.logout} Log out
+          </button>
+        </div>
       </aside>
       <main className="main-content">
         <Routes>
@@ -178,73 +190,84 @@ function DashboardPage() {
     api.getDashboard().then(setData).catch((err: Error) => setError(err.message))
   }, [])
 
-  if (error) {
-    return <PageState title="Dashboard" message={error} />
-  }
-
-  if (!data) {
-    return <PageState title="Dashboard" message="Loading counts and recent activity." />
-  }
+  if (error) return <PageState title="Dashboard" message={error} />
+  if (!data) return <PageState title="Dashboard" message="Loading..." />
 
   return (
-    <section className="page-grid">
-      <header className="page-header wide">
+    <div className="page page-wide">
+      <header className="page-header">
         <div>
-          <p className="panel-kicker">Archive overview</p>
-          <h2>One place for scattered exports</h2>
+          <h2>Dashboard</h2>
+          <p className="page-desc">Archive overview across all providers</p>
         </div>
-        <p className="muted">Upload provider exports, keep the originals, and search normalized conversations across products.</p>
       </header>
 
-      <article className="panel stat-panel">
-        <span className="stat-label">Conversations</span>
-        <strong>{data.conversation_count}</strong>
-      </article>
-      <article className="panel stat-panel">
-        <span className="stat-label">Messages</span>
-        <strong>{data.message_count}</strong>
-      </article>
-      <article className="panel stat-panel">
-        <span className="stat-label">Imports</span>
-        <strong>{data.import_count}</strong>
-      </article>
-
-      <article className="panel wide">
-        <div className="panel-header-row">
-          <h3>Provider mix</h3>
+      <div className="stats-row">
+        <div className="stat-card">
+          <div className="stat-value">{data.conversation_count.toLocaleString()}</div>
+          <div className="stat-label">Conversations</div>
         </div>
-        {data.providers.length ? (
-          <ul className="plain-list">
-            {data.providers.map((provider) => (
-              <li key={provider.provider} className="list-row">
-                <span>{provider.provider}</span>
-                <strong>{provider.count}</strong>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="muted">No conversations yet. Start with an export upload.</p>
-        )}
-      </article>
-
-      <article className="panel">
-        <div className="panel-header-row">
-          <h3>Recent imports</h3>
+        <div className="stat-card">
+          <div className="stat-value">{data.message_count.toLocaleString()}</div>
+          <div className="stat-label">Messages</div>
         </div>
-        {data.recent_imports.length ? <ImportList items={data.recent_imports} compact /> : <p className="muted">No imports yet.</p>}
-      </article>
+        <div className="stat-card">
+          <div className="stat-value">{data.import_count.toLocaleString()}</div>
+          <div className="stat-label">Imports</div>
+        </div>
+      </div>
 
-      <article className="panel">
-        <div className="panel-header-row">
+      <div className="two-col">
+        <div className="panel">
+          <div className="panel-header">
+            <h3>Providers</h3>
+          </div>
+          <div className="panel-body">
+            {data.providers.length ? (
+              <ul className="provider-list">
+                {data.providers.map((p) => (
+                  <li key={p.provider}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <ProviderBadge provider={p.provider} />
+                      {p.provider}
+                    </span>
+                    <span className="provider-count">{p.count.toLocaleString()}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="empty-state">No conversations yet</div>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <h3>Recent imports</h3>
+          </div>
+          <div className="panel-body">
+            {data.recent_imports.length ? (
+              <ImportList items={data.recent_imports} compact />
+            ) : (
+              <div className="empty-state">No imports yet</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">
           <h3>Recent conversations</h3>
         </div>
-        {data.recent_conversations.length ? (
-          <ConversationList items={data.recent_conversations} />
-        ) : (
-          <p className="muted">Conversations will appear here after the first successful import.</p>
-        )}
-      </article>
-    </section>
+        <div className="panel-body">
+          {data.recent_conversations.length ? (
+            <ConversationList items={data.recent_conversations} />
+          ) : (
+            <div className="empty-state">Import a provider export to get started</div>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -253,6 +276,7 @@ function ImportsPage() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [dragOver, setDragOver] = useState(false)
 
   const loadImports = async () => {
     try {
@@ -269,9 +293,7 @@ function ImportsPage() {
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!selectedFile) {
-      return
-    }
+    if (!selectedFile) return
     setBusy(true)
     setError('')
     try {
@@ -285,45 +307,63 @@ function ImportsPage() {
     }
   }
 
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) setSelectedFile(file)
+  }
+
   return (
-    <section className="page-grid single-column">
+    <div className="page">
       <header className="page-header">
         <div>
-          <p className="panel-kicker">Browser upload</p>
-          <h2>Import raw exports</h2>
+          <h2>Imports</h2>
+          <p className="page-desc">Upload provider exports (.zip or .json)</p>
         </div>
-        <p className="muted">The original file stays untouched in storage. Parsed conversations are normalized into the archive.</p>
       </header>
 
-      <form className="panel upload-panel" onSubmit={onSubmit}>
-        <label>
-          Export file
-          <input
-            type="file"
-            accept=".zip,.json"
-            onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
-            required
-          />
-        </label>
-        <div className="upload-actions">
-          <button type="submit" disabled={busy || !selectedFile}>{busy ? 'Uploading...' : 'Upload export'}</button>
-          <p className="muted">Supports ChatGPT `conversations.json`, Anthropic Claude exports, and Gemini-style JSON exports.</p>
+      <form onSubmit={onSubmit}>
+        <div
+          className={`upload-zone${dragOver ? ' drag-over' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+        >
+          <label>
+            <span className="upload-title">
+              {selectedFile ? selectedFile.name : 'Drop file here or click to browse'}
+            </span>
+            <span className="upload-hint">ChatGPT, Claude, and Gemini exports supported</span>
+            <input
+              type="file"
+              accept=".zip,.json"
+              onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
+          <div className="upload-actions">
+            <button className="btn btn-primary" type="submit" disabled={busy || !selectedFile}>
+              {busy ? 'Uploading...' : 'Upload'}
+            </button>
+          </div>
         </div>
-        {error ? <p className="error-text">{error}</p> : null}
+        {error && <p className="error-text" style={{ marginBottom: '1rem' }}>{error}</p>}
       </form>
 
-      <article className="panel">
-        <div className="panel-header-row">
-          <h3>Import history</h3>
-          <button className="secondary-button" type="button" onClick={() => void loadImports()}>
-            Refresh
-          </button>
+      <div className="panel">
+        <div className="panel-header">
+          <h3>History</h3>
+          <button className="btn btn-ghost" type="button" onClick={() => void loadImports()}>Refresh</button>
         </div>
-        <ImportList items={imports} />
-      </article>
-    </section>
+        <div className="panel-body">
+          <ImportList items={imports} />
+        </div>
+      </div>
+    </div>
   )
 }
+
+const PAGE_SIZE = 50
 
 function ConversationsPage() {
   const [provider, setProvider] = useState('')
@@ -331,14 +371,22 @@ function ConversationsPage() {
   const [items, setItems] = useState<Array<ConversationListItem & { snippet?: string }>>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const isSearch = query.trim().length > 0
 
   const load = async () => {
     setBusy(true)
     try {
-      const result = query.trim()
-        ? await api.searchConversations(query.trim(), provider || undefined)
-        : await api.listConversations(provider || undefined)
-      setItems(result)
+      if (isSearch) {
+        const result = await api.searchConversations(query.trim(), provider || undefined, PAGE_SIZE)
+        setItems(result)
+        setHasMore(false) // search endpoint has no offset support
+      } else {
+        const result = await api.listConversations(provider || undefined, PAGE_SIZE, 0)
+        setItems(result)
+        setHasMore(result.length >= PAGE_SIZE)
+      }
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load conversations.')
@@ -347,127 +395,147 @@ function ConversationsPage() {
     }
   }
 
+  const loadMore = async () => {
+    if (isSearch || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const result = await api.listConversations(provider || undefined, PAGE_SIZE, items.length)
+      setItems((prev) => [...prev, ...result])
+      setHasMore(result.length >= PAGE_SIZE)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load more.')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
   useEffect(() => {
     void load()
   }, [])
 
   return (
-    <section className="page-grid single-column">
+    <div className="page">
       <header className="page-header">
         <div>
-          <p className="panel-kicker">Archive viewer</p>
-          <h2>Browse conversations</h2>
+          <h2>Conversations</h2>
         </div>
-        <p className="muted">Search message text across all imports, or filter the archive to a single provider.</p>
       </header>
 
-      <form className="panel toolbar" onSubmit={(event) => { event.preventDefault(); void load() }}>
-        <label>
-          Search
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask about a topic, model, or phrase" />
-        </label>
-        <label>
-          Provider
-          <select value={provider} onChange={(event) => setProvider(event.target.value)}>
-            <option value="">All providers</option>
+      <form className="toolbar" onSubmit={(e) => { e.preventDefault(); void load() }}>
+        <div className="field">
+          <label>Search</label>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search messages..."
+          />
+        </div>
+        <div className="field field-sm">
+          <label>Provider</label>
+          <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+            <option value="">All</option>
             <option value="chatgpt">ChatGPT</option>
             <option value="gemini">Gemini</option>
             <option value="claude">Claude</option>
           </select>
-        </label>
-        <button type="submit" disabled={busy}>{busy ? 'Searching...' : 'Apply'}</button>
+        </div>
+        <button className="btn btn-primary" type="submit" disabled={busy}>
+          {busy ? 'Searching...' : 'Search'}
+        </button>
       </form>
 
-      <article className="panel">
-        <div className="panel-header-row">
-          <h3>{query.trim() ? 'Search results' : 'All conversations'}</h3>
+      <div className="panel">
+        <div className="panel-header">
+          <h3>{isSearch ? `Results for "${query.trim()}"` : `All conversations`}</h3>
+          <span className="muted" style={{ fontSize: '0.75rem' }}>
+            {items.length} shown{hasMore ? '+' : ''}
+          </span>
         </div>
-        {error ? <p className="error-text">{error}</p> : null}
-        <ConversationList items={items} showSnippet />
-      </article>
-    </section>
+        <div className="panel-body">
+          {error && <p className="error-text" style={{ padding: '0.75rem 1rem' }}>{error}</p>}
+          <ConversationList items={items} showSnippet />
+          {hasMore && (
+            <div className="load-more">
+              <button className="btn btn-secondary" type="button" onClick={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore ? 'Loading...' : `Load more conversations`}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
 function ConversationDetailPage() {
   const { conversationId } = useParams()
+  const navigate = useNavigate()
   const [conversation, setConversation] = useState<ConversationDetail | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!conversationId) {
-      return
-    }
+    if (!conversationId) return
     api.getConversation(conversationId).then(setConversation).catch((err: Error) => setError(err.message))
   }, [conversationId])
 
-  if (error) {
-    return <PageState title="Conversation" message={error} />
-  }
-
-  if (!conversation) {
-    return <PageState title="Conversation" message="Loading messages." />
-  }
+  if (error) return <PageState title="Error" message={error} />
+  if (!conversation) return <PageState title="Loading" message="Fetching conversation..." />
 
   return (
-    <section className="page-grid single-column">
-      <header className="page-header">
-        <div>
-          <p className="panel-kicker">Conversation record</p>
-          <h2>{conversation.title}</h2>
-        </div>
-        <div className="header-meta-block">
-          <span className="provider-tag">{conversation.provider}</span>
-          <span>{conversation.messages.length} messages</span>
-        </div>
-      </header>
+    <div className="page page-wide">
+      <button className="back-link btn btn-ghost" onClick={() => navigate('/conversations')} type="button" style={{ marginBottom: '0.75rem', padding: '0.25rem 0.375rem' }}>
+        {icons.back} Back to conversations
+      </button>
 
-      <article className="panel provenance-panel">
-        <div>
-          <h3>Provenance</h3>
-          <p className="muted">This is an archive view, not a live chat transcript. It shows normalized message records and the import that produced them.</p>
-        </div>
-        <dl className="metadata-list">
-          <div>
-            <dt>Created</dt>
-            <dd>{formatDate(conversation.created_at)}</dd>
-          </div>
-          <div>
-            <dt>Updated</dt>
-            <dd>{formatDate(conversation.updated_at)}</dd>
-          </div>
-          <div>
-            <dt>Source import</dt>
-            <dd>{conversation.source_import?.original_filename ?? 'Unknown'}</dd>
-          </div>
+      <div className="detail-header">
+        <h2>{conversation.title}</h2>
+        <ProviderBadge provider={conversation.provider} />
+      </div>
+
+      <div className="detail-meta">
+        <dl style={{ margin: 0 }}>
+          <dt>Created</dt>
+          <dd>{formatDate(conversation.created_at)}</dd>
         </dl>
-      </article>
+        <dl style={{ margin: 0 }}>
+          <dt>Updated</dt>
+          <dd>{formatDate(conversation.updated_at)}</dd>
+        </dl>
+        <dl style={{ margin: 0 }}>
+          <dt>Messages</dt>
+          <dd>{conversation.messages.length}</dd>
+        </dl>
+        <dl style={{ margin: 0 }}>
+          <dt>Source</dt>
+          <dd>{conversation.source_import?.original_filename ?? 'Unknown'}</dd>
+        </dl>
+      </div>
 
-      <article className="message-stack">
-        {conversation.messages.map((message) => (
-          <section className="message-record" key={message.id}>
-            <header>
-              <span className={`role-marker role-${message.role}`}>{message.role}</span>
-              <div>
-                <strong>{message.author_name || 'Unknown author'}</strong>
-                <p className="muted">#{message.sequence} · {formatDate(message.created_at)}{message.model ? ` · ${message.model}` : ''}</p>
+      <div className="panel">
+        <div className="message-thread">
+          {conversation.messages.map((msg) => (
+            <div className={`message-block ${msg.role === 'assistant' ? 'message-block-assistant' : ''}`} key={msg.id}>
+              <div className="message-header">
+                <span className={`role-marker role-${msg.role}`}>{msg.role}</span>
+                <span className="message-author">{msg.author_name || roleDisplayName(msg.role)}</span>
+                <span className="message-info">
+                  #{msg.sequence}{msg.created_at ? ` · ${formatDate(msg.created_at)}` : ''}{msg.model ? ` · ${msg.model}` : ''}
+                </span>
               </div>
-            </header>
-            <pre>{message.text}</pre>
-            {message.attachments.length ? (
-              <div className="message-attachments">
-                <strong>Attachments</strong>
-                <ul className="attachment-list">
-                  {message.attachments.map((attachment) => (
-                    <AttachmentItem key={attachment.id} attachment={attachment} />
+              <pre className="message-body">{msg.text}</pre>
+              {msg.attachments.length > 0 && (
+                <div className="attachments-section">
+                  <div className="attachments-label">Attachments</div>
+                  {msg.attachments.map((att) => (
+                    <AttachmentItem key={att.id} attachment={att} />
                   ))}
-                </ul>
-              </div>
-            ) : null}
-          </section>
-        ))}
-      </article>
-    </section>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -490,156 +558,185 @@ function SettingsPage() {
   }
 
   return (
-    <section className="page-grid single-column">
+    <div className="page">
       <header className="page-header">
         <div>
-          <p className="panel-kicker">Settings</p>
-          <h2>Single-user controls</h2>
+          <h2>Settings</h2>
         </div>
-        <p className="muted">This MVP keeps auth intentionally small: one password, one user, server-side sessions.</p>
       </header>
 
-      <form className="panel settings-form" onSubmit={onSubmit}>
-        <h3>Change password</h3>
-        <label>
-          Current password
-          <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
-        </label>
-        <label>
-          New password
-          <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required />
-        </label>
-        <button type="submit">Save new password</button>
-        {status ? <p className={status === 'Password updated.' ? 'success-text' : 'error-text'}>{status}</p> : null}
-      </form>
-    </section>
+      <div className="panel">
+        <div className="panel-header">
+          <h3>Change password</h3>
+        </div>
+        <div className="panel-body-pad">
+          <form className="settings-form form-grid" onSubmit={onSubmit}>
+            <label>
+              Current password
+              <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
+            </label>
+            <label>
+              New password
+              <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
+            </label>
+            <div className="form-actions">
+              <button className="btn btn-primary" type="submit">Save</button>
+              {status && <p className={status === 'Password updated.' ? 'success-text' : 'error-text'}>{status}</p>}
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   )
 }
 
+// ── Shared components ──
+
 function PageState({ title, message }: { title: string; message: string }) {
   return (
-    <section className="page-grid single-column">
+    <div className="page">
       <header className="page-header">
         <div>
-          <p className="panel-kicker">{title}</p>
-          <h2>{message}</h2>
+          <h2>{title}</h2>
+          <p className="page-desc">{message}</p>
         </div>
       </header>
-    </section>
+    </div>
   )
+}
+
+function ProviderBadge({ provider }: { provider: string }) {
+  const p = provider.toLowerCase()
+  let cls = 'badge badge-default'
+  if (p.includes('chatgpt') || p.includes('openai')) cls = 'badge badge-chatgpt'
+  else if (p.includes('claude') || p.includes('anthropic')) cls = 'badge badge-claude'
+  else if (p.includes('gemini') || p.includes('google')) cls = 'badge badge-gemini'
+  return <span className={cls}>{provider}</span>
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = status.toLowerCase()
+  let cls = 'badge badge-status badge-default'
+  if (s === 'completed') cls = 'badge badge-status badge-completed'
+  else if (s === 'failed') cls = 'badge badge-status badge-failed'
+  else if (s === 'processing' || s === 'queued') cls = 'badge badge-status badge-processing'
+  return <span className={cls}>{status}</span>
 }
 
 function ImportList({ items, compact = false }: { items: ImportRecord[]; compact?: boolean }) {
   if (!items.length) {
-    return <p className="muted">Nothing imported yet.</p>
+    return <div className="empty-state">No imports</div>
   }
 
   return (
-    <ul className={compact ? 'plain-list compact' : 'plain-list'}>
+    <div>
       {items.map((item) => (
-        <li key={item.id} className="list-card">
-          <div className="list-card-top">
-            <div>
-              <strong>{item.original_filename}</strong>
-              <p className="muted">{item.provider} · {formatDate(item.created_at)}</p>
-            </div>
-            <span className={`status-chip status-${item.status}`}>{item.status}</span>
-          </div>
-          {!compact ? (
+        <div className="import-row" key={item.id}>
+          <span className="import-filename">{item.original_filename}</span>
+          <ProviderBadge provider={item.provider} />
+          <StatusBadge status={item.status} />
+          <span className="import-meta">{formatDate(item.created_at)}</span>
+          {!compact && (
             <>
-              <p className="muted">Inserted {item.summary.inserted_messages ?? 0} messages, imported {item.summary.inserted_attachments ?? 0} attachments, skipped {item.summary.duplicate_messages ?? 0} duplicates.</p>
-              {item.error ? <p className="error-text">{item.error}</p> : null}
-              {item.warnings.length ? <p className="muted">Warnings: {item.warnings.join(' | ')}</p> : null}
+              <span className="import-stats">
+                {item.summary.inserted_messages ?? 0} msgs · {item.summary.inserted_attachments ?? 0} attachments · {item.summary.duplicate_messages ?? 0} dupes
+              </span>
+              {item.error && <span className="import-error">{item.error}</span>}
+              {item.warnings.length > 0 && <span className="import-warnings">{item.warnings.join(' | ')}</span>}
             </>
-          ) : null}
-        </li>
+          )}
+        </div>
       ))}
-    </ul>
+    </div>
   )
 }
 
 function ConversationList({ items, showSnippet = false }: { items: Array<ConversationListItem & { snippet?: string }>; showSnippet?: boolean }) {
   const navigate = useNavigate()
-  const emptyState = useMemo(() => {
-    if (showSnippet) {
-      return 'No matching conversations.'
-    }
-    return 'No conversations available.'
-  }, [showSnippet])
 
   if (!items.length) {
-    return <p className="muted">{emptyState}</p>
+    return <div className="empty-state">{showSnippet ? 'No matching conversations' : 'No conversations'}</div>
   }
 
   return (
-    <ul className="plain-list">
+    <div>
       {items.map((item) => (
-        <li key={item.id}>
-          <button className="conversation-link" type="button" onClick={() => navigate(`/conversations/${item.id}`)}>
-            <div className="conversation-link-top">
-              <strong>{item.title}</strong>
-              <span className="provider-tag">{item.provider}</span>
-            </div>
-            <p className="muted">{item.message_count} messages · {formatDate(item.updated_at || item.last_message_at)}</p>
-            {item.snippet ? <p className="snippet">{item.snippet}</p> : null}
-          </button>
-        </li>
+        <button className="conv-row" key={item.id} type="button" onClick={() => navigate(`/conversations/${item.id}`)}>
+          <span className="conv-title">{item.title}</span>
+          <span className="conv-badge"><ProviderBadge provider={item.provider} /></span>
+          <span className="conv-meta">
+            {item.message_count} msgs · {formatDate(item.updated_at || item.last_message_at)}
+          </span>
+          {showSnippet && item.snippet && (
+            <span className="conv-snippet" dangerouslySetInnerHTML={{ __html: item.snippet }} />
+          )}
+        </button>
       ))}
-    </ul>
+    </div>
   )
-}
-
-function formatDate(value?: string | null) {
-  if (!value) {
-    return 'Unknown'
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-  return date.toLocaleString()
-}
-
-function describeAttachment(metadata?: Record<string, unknown> | null) {
-  if (!metadata) {
-    return 'Metadata only'
-  }
-  const source = typeof metadata.source === 'string' ? metadata.source : 'attachment'
-  const fileType = typeof metadata.file_type === 'string' ? metadata.file_type : ''
-  const fileSize = typeof metadata.file_size === 'number' ? `${metadata.file_size} bytes` : ''
-  return [source.replace(/_/g, ' '), fileType, fileSize].filter(Boolean).join(' · ') || 'Metadata only'
-}
-
-function attachmentPreview(metadata?: Record<string, unknown> | null) {
-  if (!metadata) {
-    return null
-  }
-  const extracted = metadata.extracted_content
-  return typeof extracted === 'string' && extracted.trim() ? extracted.trim() : null
 }
 
 function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) {
   const [open, setOpen] = useState(false)
-  const preview = attachmentPreview(attachment.metadata)
+  const preview = getExtractedContent(attachment.metadata)
+  const info = describeAttachment(attachment.metadata)
 
   return (
-    <li className="attachment-item">
-      <div className="attachment-row">
+    <>
+      <div className="attachment-chip">
         <div>
-          <strong>{attachment.filename}</strong>
-          <p className="muted attachment-meta">{describeAttachment(attachment.metadata)}</p>
+          <span className="att-name">{attachment.filename}</span>
+          <span className="att-info" style={{ marginLeft: '0.5rem' }}>{info}</span>
         </div>
         {preview ? (
-          <button className="secondary-button attachment-toggle" type="button" onClick={() => setOpen((value) => !value)}>
-            {open ? 'Hide text' : 'View text'}
+          <button className="btn btn-ghost" type="button" onClick={() => setOpen((v) => !v)}>
+            {open ? 'Hide' : 'View'}
           </button>
         ) : (
-          <span className="muted attachment-empty">No text content in export</span>
+          <span className="att-info">No text content</span>
         )}
       </div>
-      {open && preview ? <pre className="attachment-preview">{preview}</pre> : null}
-    </li>
+      {open && preview && <pre className="attachment-preview">{preview}</pre>}
+    </>
   )
+}
+
+// ── Helpers ──
+
+function roleDisplayName(role: string) {
+  if (role === 'user') return 'You'
+  if (role === 'assistant') return 'Assistant'
+  if (role === 'system') return 'System'
+  if (role === 'tool') return 'Tool'
+  return role
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) +
+    ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+function describeAttachment(metadata?: Record<string, unknown> | null) {
+  if (!metadata) return ''
+  const source = typeof metadata.source === 'string' ? metadata.source.replace(/_/g, ' ') : ''
+  const fileType = typeof metadata.file_type === 'string' ? metadata.file_type : ''
+  const fileSize = typeof metadata.file_size === 'number' ? formatBytes(metadata.file_size) : ''
+  return [source, fileType, fileSize].filter(Boolean).join(' · ')
+}
+
+function getExtractedContent(metadata?: Record<string, unknown> | null) {
+  if (!metadata) return null
+  const extracted = metadata.extracted_content
+  return typeof extracted === 'string' && extracted.trim() ? extracted.trim() : null
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
 export default App

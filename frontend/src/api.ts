@@ -127,15 +127,17 @@ export const api = {
       body: formData,
     })
   },
-  listConversations: async (provider?: string) => {
-    const query = provider ? `?provider=${encodeURIComponent(provider)}` : ''
-    return (await request<{ items: ConversationListItem[] }>(`/api/conversations${query}`)).items
+  listConversations: async (provider?: string, limit = 50, offset = 0) => {
+    const params = new URLSearchParams()
+    if (provider) params.set('provider', provider)
+    params.set('limit', String(limit))
+    params.set('offset', String(offset))
+    return (await request<{ items: ConversationListItem[] }>(`/api/conversations?${params}`)).items
   },
-  searchConversations: async (query: string, provider?: string) => {
+  searchConversations: async (query: string, provider?: string, limit = 50) => {
     const params = new URLSearchParams({ q: query })
-    if (provider) {
-      params.set('provider', provider)
-    }
+    if (provider) params.set('provider', provider)
+    params.set('limit', String(limit))
     return (await request<{ items: Array<ConversationListItem & { snippet: string }> }>(`/api/search?${params}`)).items
   },
   getConversation: (id: string) => request<ConversationDetail>(`/api/conversations/${id}`),
