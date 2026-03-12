@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import mimetypes
+import re
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
+
+from .db import BLOBS_DIR
 
 
 class ImportParseError(Exception):
@@ -20,6 +25,8 @@ def parse_export(export_path: Path) -> dict[str, Any]:
         return parse_claude_export(export_path)
     if provider == "chatgpt":
         return parse_chatgpt_export(export_path)
+    if provider == "googleaistudio":
+        return parse_google_ai_studio_export(export_path)
     if provider == "gemini":
         return parse_gemini_export(export_path)
     raise ImportParseError("Could not recognize this export format.")
@@ -28,6 +35,8 @@ def parse_export(export_path: Path) -> dict[str, Any]:
 def detect_provider(export_path: Path) -> str:
     lower_name = export_path.name.lower()
     if export_path.suffix.lower() == ".zip":
+        if looks_like_google_ai_studio_archive(export_path):
+            return "googleaistudio"
         with ZipFile(export_path) as archive:
             names = [name.lower() for name in archive.namelist()]
             if all(name in names for name in ("users.json", "projects.json", "conversations.json")):
@@ -47,6 +56,8 @@ def detect_provider(export_path: Path) -> str:
         document = load_json_file(export_path)
         if looks_like_kimi_capture_bundle(document):
             return "kimi"
+        if looks_like_google_ai_studio_document(document):
+            return "googleaistudio"
         if looks_like_claude(document) or "claude" in lower_name or "anthropic" in lower_name:
             return "claude"
         if looks_like_chatgpt(document):
@@ -54,6 +65,105 @@ def detect_provider(export_path: Path) -> str:
         if looks_like_gemini(document) or "gemini" in lower_name or "bard" in lower_name:
             return "gemini"
     return "unknown"
+
+
+def parse_google_ai_studio_export(export_path: Path) -> dict[str, Any]:
+    normalized: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    sources: list[dict[str, Any]] = []
+    source_paths: set[tuple[str, str]] = set()
+    orphan_assets: list[dict[str, Any]] = []
+    message_total = 0
+    attachment_total = 0
+
+    if export_path.suffix.lower() == ".json":
+        document = load_json_file(export_path)
+        if not looks_like_google_ai_studio_document(document):
+            raise ImportParseError("Google AI Studio export did not contain a recognizable conversation document.")
+        conversation = normalize_google_ai_studio_conversation(
+            export_path.name,
+            document,
+            fallback_timestamp=None,
+            add_source=lambda source: register_google_ai_studio_source(source, sources, source_paths),
+        )
+        if conversation is None:
+            raise ImportParseError("Google AI Studio export was recognized, but no messages could be parsed.")
+        normalized.append(conversation)
+    elif export_path.suffix.lower() == ".zip":
+        with ZipFile(export_path) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                raw = archive.read(info.filename)
+                document = parse_json_bytes(raw)
+                if looks_like_google_ai_studio_document(document):
+                    conversation = normalize_google_ai_studio_conversation(
+                        info.filename,
+                        document,
+                        fallback_timestamp=zipinfo_timestamp(info),
+                        add_source=lambda source: register_google_ai_studio_source(source, sources, source_paths),
+                    )
+                    if conversation is None:
+                        warnings.append(f"Skipped Google AI Studio conversation {info.filename}: no visible messages found.")
+                        continue
+                    normalized.append(conversation)
+                    continue
+
+                if should_ignore_google_ai_studio_asset(info.filename):
+                    continue
+
+                asset = normalize_google_ai_studio_asset(
+                    info,
+                    raw,
+                    add_source=lambda source: register_google_ai_studio_source(source, sources, source_paths),
+                )
+                if asset is not None:
+                    orphan_assets.append(asset)
+    else:
+        raise ImportParseError("Google AI Studio imports must be a .zip or .json file.")
+
+    if not normalized:
+        raise ImportParseError("Google AI Studio export was recognized, but no conversations could be parsed.")
+
+    attached_orphans = 0
+    unmatched_orphans = 0
+    for asset in orphan_assets:
+        matched = match_google_ai_studio_asset(asset, normalized)
+        if matched:
+            attached_orphans += 1
+        else:
+            unmatched_orphans += 1
+
+    for conversation in normalized:
+        messages = conversation.get("messages") or []
+        for sequence, message in enumerate(messages, start=1):
+            message["sequence"] = sequence
+        message_total += len(messages)
+        attachment_total += sum(len(message.get("attachments") or []) for message in messages)
+        conversation.pop("_google_ai_studio_match", None)
+        for message in messages:
+            message.pop("_google_ai_studio_match", None)
+
+    if unmatched_orphans:
+        warnings.append(
+            f"Preserved {unmatched_orphans} Google AI Studio artifact(s) as source files because they could not be matched confidently to a conversation."
+        )
+
+    return {
+        "provider": "googleaistudio",
+        "parser_version": "googleaistudio:v1",
+        "conversations": normalized,
+        "warnings": warnings,
+        "sources": sources,
+        "summary": {
+            "conversation_count": len(normalized),
+            "message_count": message_total,
+            "attachment_count": attachment_total,
+            "matched_artifact_count": attached_orphans,
+            "unmatched_artifact_count": unmatched_orphans,
+            "source_file_count": len(sources),
+        },
+    }
 
 
 def parse_kimi_capture_bundle(export_path: Path) -> dict[str, Any]:
@@ -392,6 +502,497 @@ def parse_gemini_export(export_path: Path) -> dict[str, Any]:
             "conversation_count": len(normalized),
             "message_count": message_total,
         },
+    }
+
+
+def looks_like_google_ai_studio_archive(export_path: Path) -> bool:
+    if export_path.suffix.lower() != ".zip":
+        return False
+    with ZipFile(export_path) as archive:
+        names = [name for name in archive.namelist() if name and not name.endswith("/")]
+        lowered = [name.lower() for name in names]
+        if any(name.startswith("google ai studio/") for name in lowered):
+            for name in names:
+                document = parse_json_bytes(archive.read(name))
+                if looks_like_google_ai_studio_document(document):
+                    return True
+        for name in names:
+            if not likely_google_ai_studio_conversation_name(name):
+                continue
+            document = parse_json_bytes(archive.read(name))
+            if looks_like_google_ai_studio_document(document):
+                return True
+    return False
+
+
+def looks_like_google_ai_studio_document(document: Any) -> bool:
+    if not isinstance(document, dict):
+        return False
+    chunked_prompt = document.get("chunkedPrompt")
+    if not isinstance(chunked_prompt, dict):
+        return False
+    chunks = chunked_prompt.get("chunks")
+    if not isinstance(chunks, list) or not chunks:
+        return False
+    run_settings = document.get("runSettings")
+    if not isinstance(run_settings, dict):
+        return False
+    return any(isinstance(chunk, dict) and chunk.get("role") in {"user", "model"} for chunk in chunks)
+
+
+def normalize_google_ai_studio_conversation(
+    source_name: str,
+    document: dict[str, Any],
+    *,
+    fallback_timestamp: datetime | None,
+    add_source: Any,
+) -> dict[str, Any] | None:
+    chunked_prompt = document.get("chunkedPrompt") or {}
+    raw_chunks = chunked_prompt.get("chunks") or []
+    if not isinstance(raw_chunks, list):
+        return None
+
+    title = google_ai_studio_title(source_name)
+    raw_run_settings = document.get("runSettings")
+    run_settings: dict[str, Any] = raw_run_settings if isinstance(raw_run_settings, dict) else {}
+    folder = str(PurePosixPath(source_name).parent)
+    pending_inputs = chunked_prompt.get("pendingInputs")
+    pending_input_count = len(pending_inputs) if isinstance(pending_inputs, list) else 0
+
+    messages: list[dict[str, Any]] = []
+    message_times: list[datetime] = []
+    for index, chunk in enumerate(raw_chunks, start=1):
+        if not isinstance(chunk, dict):
+            continue
+        if chunk.get("isThought"):
+            continue
+
+        role = normalize_role(chunk.get("role"))
+        attachments: list[dict[str, Any]] = []
+
+        inline_file = chunk.get("inlineFile")
+        attachment = google_ai_studio_attachment_from_inline_file(
+            inline_file,
+            title=title,
+            message_index=index,
+            add_source=add_source,
+        )
+        if attachment is not None:
+            attachments.append(attachment)
+
+        raw_parts = chunk.get("parts")
+        parts: list[Any] = raw_parts if isinstance(raw_parts, list) else []
+        rendered_parts: list[str] = []
+        for part_index, part in enumerate(parts, start=1):
+            if not isinstance(part, dict):
+                continue
+            if part.get("thought"):
+                continue
+            part_text = str(part.get("text") or "")
+            if part_text:
+                rendered_parts.append(part_text)
+            inline_data = part.get("inlineData")
+            attachment = google_ai_studio_attachment_from_inline_data(
+                inline_data,
+                title=title,
+                message_index=index,
+                part_index=part_index,
+                add_source=add_source,
+            )
+            if attachment is not None:
+                attachments.append(attachment)
+
+        text = str(chunk.get("text") or "").strip()
+        if not text:
+            text = "".join(rendered_parts).strip()
+        if not text and not attachments:
+            continue
+
+        created_at = iso_timestamp(chunk.get("createTime"))
+        if created_at is None and fallback_timestamp is not None:
+            created_at = fallback_timestamp.isoformat()
+        created_at_dt = parse_iso_datetime(created_at)
+        if created_at_dt is not None:
+            message_times.append(created_at_dt)
+
+        message = {
+            "provider_message_id": stable_hash(f"googleaistudio:{source_name}:{index}"),
+            "role": role,
+            "author_name": google_ai_studio_author_name(role),
+            "model": run_settings.get("model") if role == "assistant" else None,
+            "created_at": created_at,
+            "text": text or format_attachment_lines(attachments),
+            "content": {
+                "text": text or None,
+                "part_count": len(parts),
+                "has_inline_file": inline_file is not None,
+                "generated_attachment_count": sum(1 for part in parts if isinstance(part, dict) and part.get("inlineData")),
+            },
+            "metadata": {
+                "source": "google_ai_studio",
+                "archive_path": source_name,
+                "chunk_index": index,
+                "finish_reason": chunk.get("finishReason"),
+                "pending_input_count": pending_input_count,
+            },
+            "attachments": attachments,
+            "_google_ai_studio_match": {
+                "fallback_timestamp": created_at_dt,
+            },
+        }
+        messages.append(message)
+
+    if not messages:
+        return None
+
+    created_at = messages[0].get("created_at") or (fallback_timestamp.isoformat() if fallback_timestamp else None)
+    updated_at = messages[-1].get("created_at") or created_at
+    conversation_time = message_times[-1] if message_times else fallback_timestamp
+
+    return {
+        "provider": "googleaistudio",
+        "provider_conversation_id": stable_hash(f"googleaistudio:{source_name}"),
+        "title": title,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "metadata": {
+            "source": "google_ai_studio",
+            "source_file": source_name,
+            "folder": folder,
+            "model": run_settings.get("model"),
+            "thinking_level": run_settings.get("thinkingLevel"),
+            "temperature": run_settings.get("temperature"),
+        },
+        "messages": messages,
+        "_google_ai_studio_match": {
+            "folder": folder,
+            "timestamp": conversation_time,
+        },
+    }
+
+
+def normalize_google_ai_studio_asset(
+    info: ZipInfo,
+    raw: bytes,
+    *,
+    add_source: Any,
+) -> dict[str, Any] | None:
+    filename = PurePosixPath(info.filename).name
+    if not filename:
+        return None
+    mime_type = detect_mime_type(filename, raw)
+    stored = store_blob_bytes(raw, filename, mime_type)
+    add_source(
+        {
+            "kind": "blob",
+            "relative_path": stored["blob_path"],
+            "sha256": stored["sha256"],
+            "metadata": {
+                "source": "google_ai_studio_artifact",
+                "archive_path": info.filename,
+                "filename": filename,
+                "mime_type": mime_type,
+                "size": len(raw),
+            },
+        }
+    )
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "blob_path": stored["blob_path"],
+        "sha256": stored["sha256"],
+        "folder": str(PurePosixPath(info.filename).parent),
+        "archive_path": info.filename,
+        "timestamp": zipinfo_timestamp(info),
+        "metadata": {
+            "source": "google_ai_studio_artifact",
+            "archive_path": info.filename,
+            "match_reason": "unmatched",
+        },
+    }
+
+
+def match_google_ai_studio_asset(asset: dict[str, Any], conversations: list[dict[str, Any]]) -> bool:
+    asset_time = asset.get("timestamp")
+    if not isinstance(asset_time, datetime):
+        return False
+
+    best_conversation: dict[str, Any] | None = None
+    best_delta: float | None = None
+    asset_folder = str(asset.get("folder") or "")
+    asset_name = normalize_google_ai_studio_name(str(asset.get("filename") or ""))
+
+    for conversation in conversations:
+        match_context = conversation.get("_google_ai_studio_match") or {}
+        if str(match_context.get("folder") or "") != asset_folder:
+            continue
+        conversation_time = match_context.get("timestamp")
+        if not isinstance(conversation_time, datetime):
+            continue
+        delta = abs((asset_time - conversation_time).total_seconds())
+        title_name = normalize_google_ai_studio_name(str(conversation.get("title") or ""))
+        title_bonus = 30.0 if asset_name and title_name and (asset_name in title_name or title_name in asset_name) else 0.0
+        adjusted_delta = max(delta - title_bonus, 0.0)
+        if adjusted_delta > 180.0:
+            continue
+        if best_delta is None or adjusted_delta < best_delta:
+            best_conversation = conversation
+            best_delta = adjusted_delta
+
+    if best_conversation is None:
+        return False
+
+    target_message = select_google_ai_studio_attachment_message(best_conversation, asset_time)
+    if target_message is None:
+        return False
+
+    attachment = {
+        "filename": asset.get("filename") or "attachment",
+        "mime_type": asset.get("mime_type"),
+        "blob_path": asset.get("blob_path"),
+        "sha256": asset.get("sha256"),
+        "metadata": {
+            **dict(asset.get("metadata") or {}),
+            "match_reason": "timestamp_only",
+            "matched_conversation_title": best_conversation.get("title"),
+            "matched_by_same_folder": True,
+            "matched_delta_seconds": best_delta,
+        },
+    }
+    matched_title_name = normalize_google_ai_studio_name(str(best_conversation.get("title") or ""))
+    if asset_name and matched_title_name and (matched_title_name in asset_name or asset_name in matched_title_name):
+        attachment["metadata"]["match_reason"] = "timestamp_and_name"
+    target_message.setdefault("attachments", []).append(attachment)
+    if not str(target_message.get("text") or "").strip():
+        target_message["text"] = format_attachment_lines(target_message.get("attachments") or [])
+    return True
+
+
+def select_google_ai_studio_attachment_message(conversation: dict[str, Any], asset_time: datetime) -> dict[str, Any] | None:
+    messages = conversation.get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        return None
+
+    best_message: dict[str, Any] | None = None
+    best_delta: float | None = None
+    for message in messages:
+        match_context = message.get("_google_ai_studio_match") or {}
+        message_time = match_context.get("fallback_timestamp")
+        if not isinstance(message_time, datetime):
+            continue
+        delta = abs((asset_time - message_time).total_seconds())
+        if best_delta is None or delta < best_delta:
+            best_message = message
+            best_delta = delta
+    return best_message or messages[-1]
+
+
+def google_ai_studio_attachment_from_inline_file(
+    inline_file: Any,
+    *,
+    title: str,
+    message_index: int,
+    add_source: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(inline_file, dict):
+        return None
+    raw = decode_base64_payload(inline_file.get("data"))
+    if raw is None:
+        return None
+    mime_type = str(inline_file.get("mimeType") or "").strip() or None
+    filename = google_ai_studio_generated_filename(title, message_index, None, mime_type, prefix="upload")
+    stored = store_blob_bytes(raw, filename, mime_type)
+    add_source(
+        {
+            "kind": "blob",
+            "relative_path": stored["blob_path"],
+            "sha256": stored["sha256"],
+            "metadata": {
+                "source": "google_ai_studio_inline_file",
+                "filename": filename,
+                "mime_type": mime_type,
+            },
+        }
+    )
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "blob_path": stored["blob_path"],
+        "sha256": stored["sha256"],
+        "metadata": {
+            "source": "google_ai_studio_inline_file",
+        },
+    }
+
+
+def google_ai_studio_attachment_from_inline_data(
+    inline_data: Any,
+    *,
+    title: str,
+    message_index: int,
+    part_index: int,
+    add_source: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(inline_data, dict):
+        return None
+    raw = decode_base64_payload(inline_data.get("data"))
+    if raw is None:
+        return None
+    mime_type = str(inline_data.get("mimeType") or "").strip() or None
+    filename = google_ai_studio_generated_filename(title, message_index, part_index, mime_type, prefix="generated")
+    stored = store_blob_bytes(raw, filename, mime_type)
+    add_source(
+        {
+            "kind": "blob",
+            "relative_path": stored["blob_path"],
+            "sha256": stored["sha256"],
+            "metadata": {
+                "source": "google_ai_studio_inline_data",
+                "filename": filename,
+                "mime_type": mime_type,
+            },
+        }
+    )
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "blob_path": stored["blob_path"],
+        "sha256": stored["sha256"],
+        "metadata": {
+            "source": "google_ai_studio_inline_data",
+        },
+    }
+
+
+def register_google_ai_studio_source(source: dict[str, Any], sources: list[dict[str, Any]], seen: set[tuple[str, str]]) -> None:
+    key = (str(source.get("kind") or ""), str(source.get("relative_path") or ""))
+    if not key[0] or not key[1] or key in seen:
+        return
+    seen.add(key)
+    sources.append(source)
+
+
+def should_ignore_google_ai_studio_asset(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.endswith("/info.md") or lowered.endswith("applet_access_history.json")
+
+
+def google_ai_studio_title(source_name: str) -> str:
+    base = PurePosixPath(source_name).name
+    stem = Path(base).stem if "." in base else base
+    stem = stem.rstrip("_")
+    return stem.replace("_", " ").strip() or "Google AI Studio conversation"
+
+
+def google_ai_studio_author_name(role: str) -> str | None:
+    if role == "user":
+        return "You"
+    if role == "assistant":
+        return "Google AI Studio"
+    return None
+
+
+def google_ai_studio_generated_filename(
+    title: str,
+    message_index: int,
+    part_index: int | None,
+    mime_type: str | None,
+    *,
+    prefix: str,
+) -> str:
+    extension = mimetypes.guess_extension(mime_type or "") or ""
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "google-ai-studio"
+    suffix = f"-{message_index}"
+    if part_index is not None:
+        suffix += f"-{part_index}"
+    return f"{prefix}-{slug}{suffix}{extension}"
+
+
+def normalize_google_ai_studio_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def likely_google_ai_studio_conversation_name(name: str) -> bool:
+    suffix = PurePosixPath(name).suffix.lower()
+    return suffix in {"", ".json"}
+
+
+def parse_json_bytes(raw: bytes) -> Any:
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def decode_base64_payload(value: Any) -> bytes | None:
+    if not value:
+        return None
+    try:
+        return base64.b64decode(str(value), validate=False)
+    except (ValueError, TypeError):
+        return None
+
+
+def zipinfo_timestamp(info: ZipInfo) -> datetime | None:
+    try:
+        return datetime(*info.date_time, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def detect_mime_type(filename: str, raw: bytes) -> str | None:
+    guessed, _ = mimetypes.guess_type(filename)
+    if guessed:
+        return guessed
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):
+        return "image/gif"
+    if raw.startswith(b"%PDF"):
+        return "application/pdf"
+    if raw.startswith(b"ftyp") or raw[4:8] == b"ftyp":
+        return "video/mp4"
+    if looks_like_text(raw):
+        return "text/plain"
+    return None
+
+
+def looks_like_text(raw: bytes) -> bool:
+    if not raw:
+        return True
+    sample = raw[:1024]
+    try:
+        decoded = sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return "\x00" not in decoded
+
+
+def store_blob_bytes(raw: bytes, filename: str, mime_type: str | None) -> dict[str, str | None]:
+    sha256 = hashlib.sha256(raw).hexdigest()
+    suffix = Path(filename).suffix
+    if not suffix:
+        suffix = mimetypes.guess_extension(mime_type or "") or ""
+    relative_path = f"{sha256[:2]}/{sha256}{suffix}"
+    destination = BLOBS_DIR / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        destination.write_bytes(raw)
+    return {
+        "blob_path": relative_path,
+        "sha256": sha256,
     }
 
 

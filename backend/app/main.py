@@ -226,6 +226,19 @@ def insert_attachment(conn: sqlite3.Connection, message_id: int, attachment: dic
     )
 
 
+def insert_source(conn: sqlite3.Connection, import_id: int, source: dict) -> None:
+    conn.execute(
+        "INSERT INTO sources(import_id, kind, relative_path, sha256, metadata_json) VALUES (?, ?, ?, ?, ?)",
+        (
+            import_id,
+            source.get("kind") or "blob",
+            source.get("relative_path") or "",
+            source.get("sha256"),
+            dumps_json(source.get("metadata") or {}),
+        ),
+    )
+
+
 def insert_message(conn: sqlite3.Connection, conversation_id: int, title: str, provider: str, message: dict, import_id: int) -> int | None:
     content_hash = hashlib.sha256(
         dumps_json(
@@ -400,6 +413,12 @@ def process_import(import_id: int, stored_path: str) -> None:
             inserted_messages = 0
             duplicate_messages = 0
             inserted_attachments = 0
+            inserted_sources = 0
+            for source in result.get("sources") or []:
+                if not isinstance(source, dict) or not source.get("relative_path"):
+                    continue
+                insert_source(conn, import_id, source)
+                inserted_sources += 1
             for conversation in result["conversations"]:
                 conversation_id = upsert_conversation(conn, conversation, import_id)
                 for message in conversation["messages"]:
@@ -414,6 +433,7 @@ def process_import(import_id: int, stored_path: str) -> None:
             summary["inserted_messages"] = inserted_messages
             summary["duplicate_messages"] = duplicate_messages
             summary["inserted_attachments"] = inserted_attachments
+            summary["inserted_sources"] = inserted_sources
 
             conn.execute(
                 """
@@ -586,6 +606,33 @@ def get_import(import_id: int, request: Request) -> dict:
         item["warnings"] = json_or_none(item.pop("warnings_json")) or []
         item["summary"] = json_or_none(item.pop("summary_json")) or {}
     return item
+
+
+@app.get("/api/imports/{import_id}/sources")
+def list_import_sources(import_id: int, request: Request) -> dict:
+    require_auth(request)
+    with connect() as conn:
+        import_row = conn.execute("SELECT id FROM imports WHERE id = ?", (import_id,)).fetchone()
+        if not import_row:
+            raise HTTPException(status_code=404, detail="Import not found.")
+        attached_hashes = {
+            str(row["sha256"])
+            for row in conn.execute(
+                "SELECT DISTINCT sha256 FROM attachments WHERE source_import_id = ? AND sha256 IS NOT NULL AND sha256 != ''",
+                (import_id,),
+            ).fetchall()
+        }
+        rows = conn.execute(
+            "SELECT id, kind, relative_path, sha256, metadata_json FROM sources WHERE import_id = ? ORDER BY id ASC",
+            (import_id,),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["metadata"] = json_or_none(item.pop("metadata_json")) or {}
+        item["is_attached"] = bool(item.get("sha256") and str(item["sha256"]) in attached_hashes)
+        items.append(item)
+    return {"items": items}
 
 
 @app.post("/api/imports")
@@ -764,7 +811,51 @@ def search(request: Request, q: str, provider: str | None = None, limit: int = 2
 @app.get("/api/attachments/{attachment_id}")
 def get_attachment(attachment_id: int, request: Request) -> JSONResponse:
     require_auth(request)
-    raise HTTPException(status_code=404, detail="Attachment storage is not wired up in this MVP.")
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, filename, mime_type, blob_path FROM attachments WHERE id = ?",
+            (attachment_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    blob_path = str(row["blob_path"] or "").strip()
+    if not blob_path:
+        raise HTTPException(status_code=404, detail="Attachment file is not available.")
+
+    resolved = (BLOBS_DIR.resolve() / blob_path).resolve()
+    try:
+        resolved.relative_to(BLOBS_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid attachment path.") from exc
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Attachment file is missing.")
+
+    media_type = str(row["mime_type"] or "").strip() or None
+    return FileResponse(resolved, filename=str(row["filename"] or "attachment"), media_type=media_type)
+
+
+@app.get("/api/sources/{source_id}")
+def get_source_file(source_id: int, request: Request) -> JSONResponse:
+    require_auth(request)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, kind, relative_path, metadata_json FROM sources WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Source file not found.")
+    path = source_file_path(str(row["kind"]), str(row["relative_path"]))
+    if path is None:
+        raise HTTPException(status_code=400, detail="Invalid source path.")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Source file is missing.")
+    raw_metadata = json_or_none(row["metadata_json"])
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    filename = str(metadata.get("filename") or metadata.get("original_filename") or Path(path).name)
+    media_type = None
+    if isinstance(metadata, dict):
+        media_type = str(metadata.get("mime_type") or "").strip() or None
+    return FileResponse(path, filename=filename, media_type=media_type)
 
 
 @app.get("/api/providers")
@@ -776,6 +867,7 @@ def providers(request: Request) -> dict:
             {"provider": "gemini", "parser_version": "gemini:v1"},
             {"provider": "claude", "parser_version": "claude:v1"},
             {"provider": "kimi", "parser_version": "kimi:v1"},
+            {"provider": "googleaistudio", "parser_version": "googleaistudio:v1"},
         ]
     }
 

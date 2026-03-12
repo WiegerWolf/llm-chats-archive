@@ -18,6 +18,15 @@ export type ImportRecord = {
   error?: string | null
 }
 
+export type ImportSource = {
+  id: number
+  kind: string
+  relative_path: string
+  sha256?: string | null
+  is_attached?: boolean
+  metadata?: Record<string, unknown> | null
+}
+
 export type ConversationListItem = {
   id: number
   title: string
@@ -119,6 +128,7 @@ export const api = {
     }),
   getDashboard: () => request<DashboardData>('/api/dashboard'),
   listImports: async () => (await request<{ items: ImportRecord[] }>('/api/imports')).items,
+  listImportSources: async (id: number) => (await request<{ items: ImportSource[] }>(`/api/imports/${id}/sources`)).items,
   uploadImport: async (file: File) => {
     const formData = new FormData()
     formData.append('file', file)

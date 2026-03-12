@@ -7,7 +7,7 @@ import {
   ArrowUpFromLine, ChevronRight, Trash2, Globe, FileText, Sparkles, Wrench,
 } from 'lucide-react'
 import { cn } from './cn'
-import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type SessionState } from './api'
+import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type ImportSource, type SessionState } from './api'
 
 // ── Marked config ──
 
@@ -53,13 +53,14 @@ function formatDateShort(value?: string | null): string {
 
 // ── Shared tiny components ──
 
-function Badge({ children, variant = 'default', className }: { children: React.ReactNode; variant?: 'default' | 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'completed' | 'failed' | 'processing' | 'queued'; className?: string }) {
+function Badge({ children, variant = 'default', className }: { children: React.ReactNode; variant?: 'default' | 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'googleaistudio' | 'completed' | 'failed' | 'processing' | 'queued'; className?: string }) {
   const styles: Record<string, string> = {
     default: 'bg-zinc-100 text-zinc-600',
     chatgpt: 'bg-emerald-50 text-emerald-700',
     claude: 'bg-pink-50 text-pink-700',
     gemini: 'bg-blue-50 text-blue-700',
     kimi: 'bg-violet-50 text-violet-700',
+    googleaistudio: 'bg-amber-50 text-amber-700',
     completed: 'bg-emerald-50 text-emerald-600',
     failed: 'bg-red-50 text-red-600',
     processing: 'bg-amber-50 text-amber-600',
@@ -74,12 +75,17 @@ function Badge({ children, variant = 'default', className }: { children: React.R
 
 function ProviderBadge({ provider }: { provider: string }) {
   const p = provider.toLowerCase()
-  let variant: 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'default' = 'default'
+  let variant: 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'googleaistudio' | 'default' = 'default'
+  let label = provider
   if (p.includes('chatgpt') || p.includes('openai')) variant = 'chatgpt'
   else if (p.includes('claude') || p.includes('anthropic')) variant = 'claude'
+  else if (p.includes('googleaistudio') || p.includes('google ai studio')) {
+    variant = 'googleaistudio'
+    label = 'Google AI Studio'
+  }
   else if (p.includes('gemini') || p.includes('google')) variant = 'gemini'
   else if (p.includes('kimi') || p.includes('moonshot')) variant = 'kimi'
-  return <Badge variant={variant}>{provider}</Badge>
+  return <Badge variant={variant}>{label}</Badge>
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -329,7 +335,7 @@ function StatsPage() {
         <div className="flex flex-col items-center gap-3 py-16 border-2 border-dashed border-zinc-200 rounded-lg text-center">
           <Upload className="w-8 h-8 text-zinc-300" />
           <h3 className="text-base font-semibold">No data yet</h3>
-          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT, Claude, or Gemini export to start browsing your conversations.</p>
+          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT, Claude, Gemini, Google AI Studio, or Kimi export to start browsing your conversations.</p>
           <Btn onClick={() => navigate('/imports')}>Go to Imports</Btn>
         </div>
       </PageShell>
@@ -459,7 +465,7 @@ function ImportsPage() {
           <label className="flex flex-col items-center gap-2 cursor-pointer">
             <ArrowUpFromLine className="w-6 h-6 text-zinc-400" />
             <span className="text-sm font-medium">{selectedFile ? selectedFile.name : 'Drop file here or click to browse'}</span>
-            <span className="text-xs text-zinc-400">ChatGPT, Claude, Gemini, and Kimi capture bundles supported</span>
+            <span className="text-xs text-zinc-400">ChatGPT, Claude, Gemini, Google AI Studio, and Kimi capture bundles supported</span>
             <input type="file" accept=".zip,.json" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} className="text-xs text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-zinc-200 file:bg-white file:text-zinc-600 file:font-medium file:text-xs file:cursor-pointer" />
           </label>
           <div className="flex items-center gap-3 mt-3 justify-center">
@@ -555,7 +561,7 @@ function ConversationsPage() {
     setSearchParams(params, { replace: true })
   }
 
-  const knownProviders = ['chatgpt', 'claude', 'gemini', 'kimi'] as const
+  const knownProviders = ['chatgpt', 'claude', 'gemini', 'googleaistudio', 'kimi'] as const
 
   return (
     <PageShell title="Conversations">
@@ -857,35 +863,106 @@ function ImportList({ items, compact = false, deletingId, onDelete }: { items: I
 
   return (
     <div>
-      {items.map((item) => (
-        <div key={item.id} className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-0.5 items-center px-4 py-2.5 border-b border-zinc-100 last:border-b-0 text-[0.8125rem]">
-          <span className="font-medium truncate">{item.original_filename}</span>
-          <div className="flex items-center gap-2 justify-end col-span-2">
-            <ProviderBadge provider={item.provider} />
-            <StatusBadge status={item.status} />
-            {!compact && onDelete && (
-              <Btn
-                type="button"
-                variant="danger"
-                className="px-2 py-1"
-                onClick={() => void onDelete(item)}
-                disabled={item.status === 'processing' || item.status === 'queued' || deletingId === item.id}
-                title={item.status === 'processing' || item.status === 'queued' ? 'Wait for import to finish before deleting.' : 'Delete this import'}
-              >
-                {deletingId === item.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-              </Btn>
-            )}
-          </div>
-          <span className="text-xs text-zinc-400 col-span-full" title={formatDateFull(item.created_at)}>{timeAgo(item.created_at)}</span>
+      {items.map((item) => <ImportListItem key={item.id} item={item} compact={compact} deletingId={deletingId} onDelete={onDelete} />)}
+    </div>
+  )
+}
+
+function ImportListItem({ item, compact = false, deletingId, onDelete }: { item: ImportRecord; compact?: boolean; deletingId?: number | null; onDelete?: (item: ImportRecord) => void }) {
+  const [open, setOpen] = useState(false)
+  const [loadingSources, setLoadingSources] = useState(false)
+  const [sourceError, setSourceError] = useState('')
+  const [sources, setSources] = useState<ImportSource[] | null>(null)
+  const preservedSources = (sources || []).filter((source) => {
+    const sourceType = source.metadata && typeof source.metadata.source === 'string' ? source.metadata.source : ''
+    return source.kind === 'blob' && sourceType === 'google_ai_studio_artifact' && !source.is_attached
+  })
+
+  const toggleOpen = async () => {
+    const next = !open
+    setOpen(next)
+    if (!next || compact || sources !== null || loadingSources) return
+    try {
+      setLoadingSources(true)
+      setSourceError('')
+      setSources(await api.listImportSources(item.id))
+    } catch (err) {
+      setSourceError(err instanceof Error ? err.message : 'Failed to load import artifacts.')
+    } finally {
+      setLoadingSources(false)
+    }
+  }
+
+  return (
+    <div className="border-b border-zinc-100 last:border-b-0">
+      <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-0.5 items-center px-4 py-2.5 text-[0.8125rem]">
+        <span className="font-medium truncate">{item.original_filename}</span>
+        <div className="flex items-center gap-2 justify-end col-span-2">
+          <ProviderBadge provider={item.provider} />
+          <StatusBadge status={item.status} />
           {!compact && (
-            <>
-              <span className="text-xs text-zinc-400 col-span-full">{item.summary.inserted_messages ?? 0} msgs · {item.summary.inserted_attachments ?? 0} attachments · {item.summary.duplicate_messages ?? 0} dupes</span>
-              {item.error && <span className="text-xs text-red-600 col-span-full">{item.error}</span>}
-              {item.warnings.length > 0 && <span className="text-xs text-amber-600 col-span-full">{item.warnings.join(' | ')}</span>}
-            </>
+            <Btn type="button" variant="ghost" className="px-2 py-1" onClick={() => void toggleOpen()}>
+              {open ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Details</>}
+            </Btn>
+          )}
+          {!compact && onDelete && (
+            <Btn
+              type="button"
+              variant="danger"
+              className="px-2 py-1"
+              onClick={() => void onDelete(item)}
+              disabled={item.status === 'processing' || item.status === 'queued' || deletingId === item.id}
+              title={item.status === 'processing' || item.status === 'queued' ? 'Wait for import to finish before deleting.' : 'Delete this import'}
+            >
+              {deletingId === item.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            </Btn>
           )}
         </div>
-      ))}
+        <span className="text-xs text-zinc-400 col-span-full" title={formatDateFull(item.created_at)}>{timeAgo(item.created_at)}</span>
+        {!compact && (
+          <>
+            <span className="text-xs text-zinc-400 col-span-full">{item.summary.inserted_messages ?? 0} msgs · {item.summary.inserted_attachments ?? 0} attachments · {item.summary.duplicate_messages ?? 0} dupes</span>
+            {item.error && <span className="text-xs text-red-600 col-span-full">{item.error}</span>}
+            {item.warnings.length > 0 && <span className="text-xs text-amber-600 col-span-full">{item.warnings.join(' | ')}</span>}
+          </>
+        )}
+      </div>
+      {!compact && open && (
+        <div className="px-4 pb-3">
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 space-y-2">
+            <div className="text-xs text-zinc-500">{item.summary.inserted_sources ?? 0} stored files · {item.summary.unmatched_artifact_count ?? 0} unmatched preserved artifacts</div>
+            {loadingSources && <div className="text-xs text-zinc-400">Loading artifacts…</div>}
+            {sourceError && <div className="text-xs text-red-600">{sourceError}</div>}
+            {!loadingSources && !sourceError && preservedSources.length > 0 && (
+              <div className="space-y-1.5">
+                {preservedSources.map((source) => <ImportSourceItem key={source.id} source={source} />)}
+              </div>
+            )}
+            {!loadingSources && !sourceError && sources !== null && preservedSources.length === 0 && (
+              <div className="text-xs text-zinc-400">No unmatched preserved artifacts for this import.</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ImportSourceItem({ source }: { source: ImportSource }) {
+  const metadata = source.metadata || null
+  const filename = getImportSourceFilename(source)
+  const url = `/api/sources/${source.id}`
+  const size = typeof metadata?.size === 'number' ? formatBytes(metadata.size) : ''
+  const mime = typeof metadata?.mime_type === 'string' ? metadata.mime_type : ''
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs">
+      <div className="min-w-0">
+        <div className="font-medium truncate">{filename}</div>
+        <div className="text-zinc-400 truncate">{[mime, size].filter(Boolean).join(' · ') || source.kind}</div>
+      </div>
+      <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-zinc-600 hover:text-zinc-900 shrink-0">
+        <ExternalLink className="w-3 h-3" /> Open
+      </a>
     </div>
   )
 }
@@ -925,6 +1002,13 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
   const preview = getExtractedContent(attachment.metadata)
   const info = describeAttachment(attachment.metadata)
   const sourceUrl = getAttachmentSourceUrl(attachment.metadata)
+  const attachmentUrl = getAttachmentFileUrl(attachment)
+  const isImage = isImageAttachment(attachment)
+  const isPdf = isPdfAttachment(attachment)
+  const isVideo = isVideoAttachment(attachment)
+  const isAudio = isAudioAttachment(attachment)
+  const canPreview = Boolean(preview || isImage)
+  const canRichPreview = Boolean(isImage || isPdf || isVideo || isAudio)
 
   return (
     <>
@@ -940,7 +1024,12 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
               <ExternalLink className="w-3 h-3" /> Source
             </a>
           )}
-          {preview ? (
+          {attachmentUrl && (
+            <a href={attachmentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-900">
+              <ExternalLink className="w-3 h-3" /> Open
+            </a>
+          )}
+          {canPreview || canRichPreview ? (
             <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => setOpen((v) => !v)}>
               {open ? <><EyeOff className="w-3 h-3" /> Hide</> : <><Eye className="w-3 h-3" /> View</>}
             </Btn>
@@ -949,8 +1038,28 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
           )}
         </div>
       </div>
-      {open && preview && (
-        <pre className="mb-1.5 p-3 rounded-md bg-zinc-100 border border-zinc-200 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed max-h-[300px] overflow-y-auto">{preview}</pre>
+      {open && (
+        <div className="mb-1.5 space-y-2">
+          {isImage && attachmentUrl && (
+            <a href={attachmentUrl} target="_blank" rel="noreferrer" className="block rounded-md border border-zinc-200 bg-zinc-50 p-2 hover:bg-zinc-100 transition-colors">
+              <img src={attachmentUrl} alt={attachment.filename} className="block max-h-[420px] max-w-full rounded object-contain mx-auto" loading="lazy" />
+            </a>
+          )}
+          {isPdf && attachmentUrl && (
+            <div className="rounded-md border border-zinc-200 bg-white overflow-hidden">
+              <iframe src={attachmentUrl} title={attachment.filename} className="block w-full h-[420px]" />
+            </div>
+          )}
+          {isVideo && attachmentUrl && (
+            <video src={attachmentUrl} controls className="block max-h-[420px] max-w-full rounded border border-zinc-200 bg-black mx-auto" preload="metadata" />
+          )}
+          {isAudio && attachmentUrl && (
+            <audio src={attachmentUrl} controls className="w-full" preload="metadata" />
+          )}
+          {preview && (
+            <pre className="p-3 rounded-md bg-zinc-100 border border-zinc-200 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed max-h-[300px] overflow-y-auto">{preview}</pre>
+          )}
+        </div>
       )}
     </>
   )
@@ -985,6 +1094,41 @@ function getAttachmentSourceUrl(metadata?: Record<string, unknown> | null) {
   const sourceUrl = metadata.source_url
   return typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl : null
 }
+
+function getAttachmentFileUrl(attachment: ConversationAttachment) {
+  return attachment.blob_path ? `/api/attachments/${attachment.id}` : null
+}
+
+function isImageAttachment(attachment: ConversationAttachment) {
+  const mimeType = attachment.mime_type?.toLowerCase() || ''
+  if (mimeType.startsWith('image/')) return true
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(attachment.filename)
+}
+
+function isPdfAttachment(attachment: ConversationAttachment) {
+  const mimeType = attachment.mime_type?.toLowerCase() || ''
+  return mimeType === 'application/pdf' || /\.pdf$/i.test(attachment.filename)
+}
+
+function isVideoAttachment(attachment: ConversationAttachment) {
+  const mimeType = attachment.mime_type?.toLowerCase() || ''
+  if (mimeType.startsWith('video/')) return true
+  return /\.(mp4|webm|mov|m4v|avi)$/i.test(attachment.filename)
+}
+
+function isAudioAttachment(attachment: ConversationAttachment) {
+  const mimeType = attachment.mime_type?.toLowerCase() || ''
+  if (mimeType.startsWith('audio/')) return true
+  return /\.(mp3|wav|ogg|m4a|flac)$/i.test(attachment.filename)
+}
+
+function getImportSourceFilename(source: ImportSource) {
+  const metadata = source.metadata || null
+  const filename = metadata && typeof metadata.filename === 'string' ? metadata.filename : ''
+  const original = metadata && typeof metadata.original_filename === 'string' ? metadata.original_filename : ''
+  return filename || original || source.relative_path.split('/').pop() || source.relative_path
+}
+
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
