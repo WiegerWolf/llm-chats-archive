@@ -144,6 +144,7 @@ def init_db() -> None:
             )
             """
         )
+        migrate_schema(conn)
 
 
 def upsert_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
@@ -169,3 +170,17 @@ def touch_fts_title(conn: sqlite3.Connection, conversation_id: int, title: str) 
         "UPDATE messages_fts SET title = ? WHERE conversation_id = ?",
         (title, conversation_id),
     )
+
+
+def has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def migrate_schema(conn: sqlite3.Connection) -> None:
+    if not has_column(conn, "messages", "source_import_id"):
+        conn.execute("ALTER TABLE messages ADD COLUMN source_import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL")
+    if not has_column(conn, "attachments", "source_import_id"):
+        conn.execute("ALTER TABLE attachments ADD COLUMN source_import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_source_import_id ON messages(source_import_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attachments_source_import_id ON attachments(source_import_id)")

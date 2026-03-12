@@ -127,6 +127,10 @@ export const api = {
       body: formData,
     })
   },
+  deleteImport: (id: number) =>
+    request<{ ok: boolean; deleted: Record<string, number> }>(`/api/imports/${id}`, {
+      method: 'DELETE',
+    }),
   listConversations: async (provider?: string, limit = 50, offset = 0) => {
     const params = new URLSearchParams()
     if (provider) params.set('provider', provider)

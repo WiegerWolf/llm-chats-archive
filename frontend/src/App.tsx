@@ -4,7 +4,7 @@ import { marked } from 'marked'
 import {
   MessageSquareText, Upload, BarChart3, Settings, LogOut, ChevronLeft,
   Search, Loader2, Paperclip, Eye, EyeOff, ExternalLink,
-  ArrowUpFromLine, ChevronRight,
+  ArrowUpFromLine, ChevronRight, Trash2,
 } from 'lucide-react'
 import { cn } from './cn'
 import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type SessionState } from './api'
@@ -393,6 +393,7 @@ function ImportsPage() {
   const [imports, setImports] = useState<ImportRecord[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -430,6 +431,21 @@ function ImportsPage() {
 
   const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) setSelectedFile(f) }
   const hasPending = imports.some((i) => i.status === 'processing' || i.status === 'queued')
+  const onDelete = async (item: ImportRecord) => {
+    if (item.status === 'processing' || item.status === 'queued') return
+    const confirmed = window.confirm(`Delete ${item.original_filename} and all messages, attachments, and stored files imported from it?`)
+    if (!confirmed) return
+    setDeletingId(item.id)
+    setError('')
+    try {
+      await api.deleteImport(item.id)
+      await loadImports()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete import.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <PageShell title="Imports" desc="Upload provider exports (.zip or .json)">
@@ -464,7 +480,7 @@ function ImportsPage() {
           </div>
         }
       >
-        <ImportList items={imports} />
+        <ImportList items={imports} deletingId={deletingId} onDelete={onDelete} />
       </Panel>
     </PageShell>
   )
@@ -748,7 +764,7 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 
 // ── Data display components ──
 
-function ImportList({ items, compact = false }: { items: ImportRecord[]; compact?: boolean }) {
+function ImportList({ items, compact = false, deletingId, onDelete }: { items: ImportRecord[]; compact?: boolean; deletingId?: number | null; onDelete?: (item: ImportRecord) => void }) {
   if (!items.length) return <EmptyState>No imports</EmptyState>
 
   return (
@@ -756,9 +772,23 @@ function ImportList({ items, compact = false }: { items: ImportRecord[]; compact
       {items.map((item) => (
         <div key={item.id} className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-0.5 items-center px-4 py-2.5 border-b border-zinc-100 last:border-b-0 text-[0.8125rem]">
           <span className="font-medium truncate">{item.original_filename}</span>
-          <ProviderBadge provider={item.provider} />
-          <StatusBadge status={item.status} />
-          <span className="text-xs text-zinc-400 col-span-1" title={formatDateFull(item.created_at)}>{timeAgo(item.created_at)}</span>
+          <div className="flex items-center gap-2 justify-end col-span-2">
+            <ProviderBadge provider={item.provider} />
+            <StatusBadge status={item.status} />
+            {!compact && onDelete && (
+              <Btn
+                type="button"
+                variant="danger"
+                className="px-2 py-1"
+                onClick={() => void onDelete(item)}
+                disabled={item.status === 'processing' || item.status === 'queued' || deletingId === item.id}
+                title={item.status === 'processing' || item.status === 'queued' ? 'Wait for import to finish before deleting.' : 'Delete this import'}
+              >
+                {deletingId === item.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              </Btn>
+            )}
+          </div>
+          <span className="text-xs text-zinc-400 col-span-full" title={formatDateFull(item.created_at)}>{timeAgo(item.created_at)}</span>
           {!compact && (
             <>
               <span className="text-xs text-zinc-400 col-span-full">{item.summary.inserted_messages ?? 0} msgs · {item.summary.inserted_attachments ?? 0} attachments · {item.summary.duplicate_messages ?? 0} dupes</span>

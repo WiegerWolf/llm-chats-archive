@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from .adapters import ImportParseError, parse_export
 from .db import (
+    BLOBS_DIR,
     RAW_DIR,
     STATIC_DIR,
     connect,
@@ -209,8 +211,8 @@ def upsert_conversation(conn: sqlite3.Connection, conversation: dict, import_id:
 def insert_attachment(conn: sqlite3.Connection, message_id: int, attachment: dict) -> None:
     conn.execute(
         """
-        INSERT INTO attachments(message_id, filename, mime_type, blob_path, sha256, metadata_json)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO attachments(message_id, filename, mime_type, blob_path, sha256, metadata_json, source_import_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             message_id,
@@ -219,11 +221,12 @@ def insert_attachment(conn: sqlite3.Connection, message_id: int, attachment: dic
             attachment.get("blob_path"),
             attachment.get("sha256"),
             dumps_json(attachment.get("metadata") or {}),
+            attachment.get("source_import_id"),
         ),
     )
 
 
-def insert_message(conn: sqlite3.Connection, conversation_id: int, title: str, provider: str, message: dict) -> int | None:
+def insert_message(conn: sqlite3.Connection, conversation_id: int, title: str, provider: str, message: dict, import_id: int) -> int | None:
     content_hash = hashlib.sha256(
         dumps_json(
             {
@@ -239,9 +242,9 @@ def insert_message(conn: sqlite3.Connection, conversation_id: int, title: str, p
             """
             INSERT INTO messages(
                 conversation_id, provider_message_id, role, author_name, model,
-                created_at, sequence, text, content_json, metadata_json, content_hash
+                created_at, sequence, text, content_json, metadata_json, content_hash, source_import_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 conversation_id,
@@ -255,6 +258,7 @@ def insert_message(conn: sqlite3.Connection, conversation_id: int, title: str, p
                 dumps_json(message.get("content") or {}),
                 dumps_json(message.get("metadata") or {}),
                 content_hash,
+                import_id,
             ),
         )
     except sqlite3.IntegrityError:
@@ -280,9 +284,109 @@ def insert_message(conn: sqlite3.Connection, conversation_id: int, title: str, p
     for attachment in message.get("attachments") or []:
         if not isinstance(attachment, dict):
             continue
+        attachment = dict(attachment)
+        attachment["source_import_id"] = import_id
         insert_attachment(conn, message_id, attachment)
         inserted_attachments += 1
     return inserted_attachments
+
+
+def source_file_path(kind: str, relative_path: str) -> Path | None:
+    root = RAW_DIR if kind == "upload" else BLOBS_DIR if kind == "blob" else None
+    if root is None:
+        return None
+    root_resolved = root.resolve()
+    resolved = (root_resolved / relative_path).resolve()
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return resolved
+
+
+def refresh_conversation_sources(conn: sqlite3.Connection, conversation_ids: list[int]) -> None:
+    for conversation_id in conversation_ids:
+        row = conn.execute(
+            """
+            SELECT source_import_id
+            FROM messages
+            WHERE conversation_id = ? AND source_import_id IS NOT NULL
+            ORDER BY COALESCE(created_at, '') DESC, id DESC
+            LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE conversations SET source_import_id = ?, updated_record_at = ? WHERE id = ?",
+            (row["source_import_id"] if row else None, utcnow(), conversation_id),
+        )
+
+
+def delete_import_data(import_id: int) -> dict[str, Any]:
+    file_paths: list[Path] = []
+    deleted_counts = {
+        "messages": 0,
+        "attachments": 0,
+        "conversations": 0,
+        "sources": 0,
+    }
+    with connect() as conn:
+        import_row = conn.execute("SELECT id, status FROM imports WHERE id = ?", (import_id,)).fetchone()
+        if not import_row:
+            raise HTTPException(status_code=404, detail="Import not found.")
+        if import_row["status"] in {"queued", "processing"}:
+            raise HTTPException(status_code=409, detail="Cannot delete an import while it is still processing.")
+
+        source_rows = conn.execute(
+            "SELECT kind, relative_path FROM sources WHERE import_id = ? ORDER BY id ASC",
+            (import_id,),
+        ).fetchall()
+        for row in source_rows:
+            path = source_file_path(str(row["kind"]), str(row["relative_path"]))
+            if path is not None:
+                file_paths.append(path)
+
+        conversation_rows = conn.execute(
+            "SELECT DISTINCT conversation_id FROM messages WHERE source_import_id = ?",
+            (import_id,),
+        ).fetchall()
+        conversation_ids = [int(row["conversation_id"]) for row in conversation_rows]
+
+        deleted_counts["attachments"] = conn.execute(
+            "DELETE FROM attachments WHERE source_import_id = ?",
+            (import_id,),
+        ).rowcount
+        conn.execute(
+            "DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE source_import_id = ?)",
+            (import_id,),
+        )
+        deleted_counts["messages"] = conn.execute(
+            "DELETE FROM messages WHERE source_import_id = ?",
+            (import_id,),
+        ).rowcount
+
+        if conversation_ids:
+            refresh_conversation_sources(conn, conversation_ids)
+            placeholders = ", ".join("?" for _ in conversation_ids)
+            deleted_counts["conversations"] = conn.execute(
+                f"DELETE FROM conversations WHERE id IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.conversation_id = conversations.id)",
+                tuple(conversation_ids),
+            ).rowcount
+
+        deleted_counts["sources"] = conn.execute(
+            "DELETE FROM sources WHERE import_id = ?",
+            (import_id,),
+        ).rowcount
+        conn.execute("DELETE FROM imports WHERE id = ?", (import_id,))
+        conn.commit()
+
+    for path in file_paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return {"ok": True, "deleted": deleted_counts}
 
 
 def process_import(import_id: int, stored_path: str) -> None:
@@ -299,7 +403,7 @@ def process_import(import_id: int, stored_path: str) -> None:
             for conversation in result["conversations"]:
                 conversation_id = upsert_conversation(conn, conversation, import_id)
                 for message in conversation["messages"]:
-                    attachment_count = insert_message(conn, conversation_id, conversation["title"], conversation["provider"], message)
+                    attachment_count = insert_message(conn, conversation_id, conversation["title"], conversation["provider"], message, import_id)
                     if attachment_count is not None:
                         inserted_messages += 1
                         inserted_attachments += attachment_count
@@ -518,6 +622,12 @@ def upload_import(
 
     background_tasks.add_task(process_import, import_id, str(destination))
     return {"id": import_id, "status": "queued", "filename": original_name}
+
+
+@app.delete("/api/imports/{import_id}")
+def delete_import(import_id: int, request: Request) -> dict[str, Any]:
+    require_auth(request)
+    return delete_import_data(import_id)
 
 
 @app.get("/api/conversations")

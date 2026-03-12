@@ -16,25 +16,48 @@
   const PAGE_SIZE = 1000
   const CONCURRENCY = 3
 
+  function decodeJwtPayload(token) {
+    if (typeof token !== 'string') return null
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    try {
+      const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+      const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4)
+      return JSON.parse(atob(padded))
+    } catch {
+      return null
+    }
+  }
+
+  function tokenScore(token) {
+    const payload = decodeJwtPayload(token)
+    if (!payload || typeof payload !== 'object') return 0
+    const typ = String(payload.typ || '').toLowerCase()
+    if (typ === 'access') return 100
+    if (typ === 'refresh') return 10
+    return 1
+  }
+
   function getCookie(name) {
     const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=([^;]*)`))
     return match ? decodeURIComponent(match[1]) : ''
   }
 
-  function getStoredToken(storage) {
+  function getStoredTokens(storage) {
+    const tokens = []
     try {
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index)
         if (!key || !/kimi|token|auth/i.test(key)) continue
         const rawValue = storage.getItem(key)
         if (!rawValue) continue
-        if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(rawValue)) return rawValue
+        if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(rawValue)) tokens.push(rawValue)
         try {
           const parsed = JSON.parse(rawValue)
           for (const candidateKey of ['token', 'access_token', 'accessToken', 'kimi-auth']) {
             const candidateValue = parsed?.[candidateKey]
             if (typeof candidateValue === 'string' && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(candidateValue)) {
-              return candidateValue
+              tokens.push(candidateValue)
             }
           }
         } catch {
@@ -44,7 +67,13 @@
     } catch {
       // Ignore storage access issues.
     }
-    return ''
+    return tokens
+  }
+
+  function pickBestToken(candidates) {
+    const valid = [...new Set(candidates.filter((token) => typeof token === 'string' && token))]
+    valid.sort((left, right) => tokenScore(right) - tokenScore(left))
+    return valid[0] || ''
   }
 
   function guessFilename(url, fallback) {
@@ -57,16 +86,49 @@
     }
   }
 
+  function readStorageValue(pattern) {
+    for (const storage of [window.localStorage, window.sessionStorage]) {
+      try {
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index)
+          if (!key || !pattern.test(key)) continue
+          const value = storage.getItem(key)
+          if (typeof value === 'string' && value.trim()) return value.trim()
+        }
+      } catch {
+        // Ignore storage access issues.
+      }
+    }
+    return ''
+  }
+
+  function sessionHeaders() {
+    const trafficId = readStorageValue(/traffic/i) || `kimi-export-${Date.now().toString(36)}`
+    const deviceId = readStorageValue(/device[_-]?id/i)
+    const sessionId = readStorageValue(/session[_-]?id/i)
+    const headers = {
+      'x-msh-platform': 'web',
+      'x-msh-version': '1.0.0',
+      'x-traffic-id': trafficId,
+    }
+    if (deviceId) headers['x-msh-device-id'] = deviceId
+    if (sessionId) headers['x-msh-session-id'] = sessionId
+    return headers
+  }
+
   function buildHeaders() {
-    const token = getCookie('kimi-auth') || getStoredToken(window.localStorage) || getStoredToken(window.sessionStorage)
+    const token = pickBestToken([
+      getCookie('kimi-auth'),
+      ...getStoredTokens(window.localStorage),
+      ...getStoredTokens(window.sessionStorage),
+    ])
     const headers = {
       'accept': 'application/json, text/plain, */*',
       'connect-protocol-version': '1',
       'content-type': 'application/json',
       'r-timezone': Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       'x-language': navigator.language || 'en-US',
-      'x-msh-platform': 'web',
-      'x-msh-version': '1.0.0',
+      ...sessionHeaders(),
     }
     if (token) headers.authorization = `Bearer ${token}`
     return headers
@@ -92,45 +154,81 @@
     return element.querySelector(selector)?.textContent?.replace(/\s+/g, ' ').trim() || ''
   }
 
-  function collectHistory() {
+  function groupLabelForDate(value) {
+    if (!value) return 'Unknown'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return 'Unknown'
+    const now = new Date()
+    const sameYear = date.getFullYear() === now.getFullYear()
+    const sameMonth = sameYear && date.getMonth() === now.getMonth()
+    if (sameMonth) return 'This Month'
+    if (sameYear) return 'This Year'
+    return `Year ${date.getFullYear()}`
+  }
+
+  function historyItemFromListChat(chat) {
+    const attachments = Array.isArray(chat.files)
+      ? chat.files.map((file) => {
+          const preview = file?.parseResult?.thumbnail?.thumbnailUrl || file?.blob?.previewUrl || file?.blob?.signUrl || ''
+          return {
+            type: 'file',
+            url: preview,
+            filename: file?.meta?.name || guessFilename(preview, 'attachment'),
+          }
+        }).filter((item) => item.url)
+      : []
+
+    return {
+      chat_id: chat.id,
+      href: `${location.origin}/chat/${chat.id}?chat_enter_method=history`,
+      title: chat.name || 'Untitled Kimi chat',
+      date_label: (chat.updateTime || chat.createTime || '').slice(0, 10),
+      preview_text: chat.messageContent || '',
+      icon_url: chat?.kimiPlus?.sceneIconUrl?.dark || chat?.kimiPlus?.sceneIconUrl?.light || '',
+      attachments,
+      group_label: groupLabelForDate(chat.updateTime || chat.createTime),
+      source: chat.source || null,
+      kimi_plus: chat.kimiPlus || null,
+      created_at: chat.createTime || null,
+      updated_at: chat.updateTime || null,
+    }
+  }
+
+  function groupHistoryItems(items) {
     const groups = []
-    const seen = new Set()
-    const groupEls = document.querySelectorAll('.group-list-container > div')
-
-    groupEls.forEach((groupEl) => {
-      const label = textOf(groupEl, '.group-name') || 'Ungrouped'
-      const items = []
-      groupEl.querySelectorAll('.history-item-container').forEach((itemEl) => {
-        const link = itemEl.querySelector('a.history-link[href*="/chat/"]')
-        if (!link) return
-        const href = new URL(link.getAttribute('href'), location.origin)
-        const match = href.pathname.match(/\/chat\/([^/?#]+)/)
-        const chatId = match ? match[1] : ''
-        if (!chatId || seen.has(chatId)) return
-        seen.add(chatId)
-
-        const attachments = Array.from(itemEl.querySelectorAll('.history-attachment-list img')).map((img) => ({
-          type: 'image',
-          url: img.getAttribute('src') || '',
-          filename: guessFilename(img.getAttribute('src') || '', 'image'),
-        })).filter((item) => item.url)
-
-        items.push({
-          chat_id: chatId,
-          href: href.toString(),
-          title: textOf(itemEl, '.title'),
-          date_label: textOf(itemEl, '.date'),
-          preview_text: textOf(itemEl, '.content'),
-          icon_url: itemEl.querySelector('.title-wrapper img')?.getAttribute('src') || '',
-          attachments,
-          group_label: label,
-        })
-      })
-
-      if (items.length) groups.push({ label, items })
-    })
-
+    const map = new Map()
+    for (const item of items) {
+      const label = item.group_label || 'Unknown'
+      if (!map.has(label)) {
+        const group = { label, items: [] }
+        map.set(label, group)
+        groups.push(group)
+      }
+      map.get(label).items.push(item)
+    }
     return groups
+  }
+
+  async function fetchHistoryFromApi() {
+    const chats = []
+    const seen = new Set()
+    let pageToken = ''
+
+    while (true) {
+      const payload = { project_id: '', page_size: 50, page_token: pageToken, query: '' }
+      const response = await apiCall('/kimi.chat.v1.ChatService/ListChats', payload)
+      const pageChats = Array.isArray(response?.chats) ? response.chats : []
+      for (const chat of pageChats) {
+        if (!chat || typeof chat !== 'object' || !chat.id || seen.has(chat.id)) continue
+        seen.add(chat.id)
+        chats.push(historyItemFromListChat(chat))
+      }
+      const nextToken = typeof response?.nextPageToken === 'string' ? response.nextPageToken : ''
+      if (!nextToken || nextToken === pageToken) break
+      pageToken = nextToken
+    }
+
+    return groupHistoryItems(chats)
   }
 
   function flattenValue(value) {
@@ -160,15 +258,194 @@
     return ''
   }
 
+  function uniqueStrings(values) {
+    return [...new Set(values.map((value) => (typeof value === 'string' ? value.trim() : '')).filter(Boolean))]
+  }
+
+  function cleanObject(value) {
+    if (Array.isArray(value)) {
+      const cleaned = value.map(cleanObject).filter((item) => item != null && (!(typeof item === 'string') || item))
+      return cleaned.length ? cleaned : null
+    }
+    if (!value || typeof value !== 'object') return value == null ? null : value
+    const cleanedEntries = Object.entries(value)
+      .map(([key, nested]) => [key, cleanObject(nested)])
+      .filter(([, nested]) => nested != null && (!(typeof nested === 'string') || nested) && (!Array.isArray(nested) || nested.length) && (!(typeof nested === 'object') || Array.isArray(nested) || Object.keys(nested).length))
+    return cleanedEntries.length ? Object.fromEntries(cleanedEntries) : null
+  }
+
+  function normalizeSearchRef(ref) {
+    if (!ref || typeof ref !== 'object') return null
+    const base = ref.base && typeof ref.base === 'object' ? ref.base : {}
+    const normalized = cleanObject({
+      id: ref.id || null,
+      url: typeof base.url === 'string' ? base.url : null,
+      title: typeof base.title === 'string' ? base.title : null,
+      snippet: typeof base.snippet === 'string' ? base.snippet : null,
+      site_name: typeof base.siteName === 'string' ? base.siteName : null,
+      icon_url: typeof base.iconUrl === 'string' ? base.iconUrl : null,
+      publish_time: typeof base.publishTime === 'string' ? base.publishTime : null,
+    })
+    return normalized && normalized.url ? normalized : null
+  }
+
+  function normalizeArtifact(artifact) {
+    if (!artifact || typeof artifact !== 'object') return null
+    return cleanObject({
+      artifact_id: artifact.artifactId || artifact.artifact_id || null,
+      type: artifact.type || null,
+      version: artifact.version || null,
+      path: artifact.path || null,
+      title: artifact.title || null,
+      content: typeof artifact.content === 'string' ? artifact.content : null,
+    })
+  }
+
+  function normalizeBlock(block) {
+    if (!block || typeof block !== 'object') return null
+    const createTime = block.createTime || block.create_time || null
+    if (block.text) {
+      const content = flattenValue(block.text)
+      return {
+        kind: 'text',
+        text: content,
+        created_at: createTime,
+      }
+    }
+    if (block.think) {
+      const content = flattenValue(block.think)
+      return {
+        kind: 'think',
+        text: content,
+        created_at: createTime,
+      }
+    }
+    if (block.search && typeof block.search === 'object') {
+      return cleanObject({
+        kind: 'search',
+        created_at: createTime,
+        keywords: Array.isArray(block.search.keywords) ? uniqueStrings(block.search.keywords) : [],
+        web_pages: Array.isArray(block.search.webPages)
+          ? block.search.webPages.map((page) => cleanObject({
+              title: page?.title || null,
+              url: page?.url || null,
+              snippet: page?.snippet || null,
+              site_name: page?.siteName || null,
+              icon_url: page?.iconUrl || null,
+              publish_time: page?.publishTime || null,
+            })).filter(Boolean)
+          : [],
+      })
+    }
+    if (block.tool && typeof block.tool === 'object') {
+      return cleanObject({
+        kind: 'tool',
+        created_at: createTime,
+        name: block.tool.name || null,
+        status: block.tool.status || null,
+        tool_call_id: block.tool.toolCallId || null,
+        args: block.tool.args || null,
+        contents: block.tool.contents || null,
+      })
+    }
+    if (block.stage && typeof block.stage === 'object') {
+      return cleanObject({
+        kind: 'stage',
+        created_at: createTime,
+        name: block.stage.name || null,
+        status: block.stage.status || null,
+        description: block.stage.description || null,
+        duration_seconds: block.stage.durationSeconds || null,
+        index: block.stage.index ?? null,
+        stage_created_at: block.stage.createTime || null,
+      })
+    }
+    if (block.multiStage && typeof block.multiStage === 'object') {
+      return cleanObject({
+        kind: 'multi_stage',
+        created_at: createTime,
+        stages: Array.isArray(block.multiStage.stages)
+          ? block.multiStage.stages.map((stage) => cleanObject({
+              name: stage?.name || null,
+              status: stage?.status || null,
+              description: stage?.description || null,
+              duration_seconds: stage?.durationSeconds || null,
+              index: stage?.index ?? null,
+              created_at: stage?.createTime || null,
+            })).filter(Boolean)
+          : [],
+      })
+    }
+    if (block.artifact && typeof block.artifact === 'object') {
+      return cleanObject({
+        kind: 'artifact',
+        created_at: createTime,
+        artifact: normalizeArtifact(block.artifact),
+      })
+    }
+    return cleanObject({
+      kind: 'unknown',
+      created_at: createTime,
+      raw: block,
+    })
+  }
+
+  function messageBlockMetadata(rawMessage) {
+    const blocks = Array.isArray(rawMessage.blocks) ? rawMessage.blocks : []
+    const normalizedBlocks = blocks.map(normalizeBlock).filter(Boolean)
+    const textParts = []
+    const thoughts = []
+    const searches = []
+    const tools = []
+    const stages = []
+    const artifacts = []
+
+    for (const block of normalizedBlocks) {
+      if (block.kind === 'text' && block.text) textParts.push(block.text)
+      if (block.kind === 'think' && block.text) thoughts.push(block)
+      if (block.kind === 'search') searches.push(block)
+      if (block.kind === 'tool') tools.push(block)
+      if (block.kind === 'stage' || block.kind === 'multi_stage') stages.push(block)
+      if (block.kind === 'artifact' && block.artifact) artifacts.push(block.artifact)
+    }
+
+    const refs = cleanObject({
+      search_chunks: rawMessage.refs && Array.isArray(rawMessage.refs.searchChunks)
+        ? rawMessage.refs.searchChunks.map(normalizeSearchRef).filter(Boolean)
+        : [],
+      used_search_chunks: rawMessage.refs && Array.isArray(rawMessage.refs.usedSearchChunks)
+        ? rawMessage.refs.usedSearchChunks.map(normalizeSearchRef).filter(Boolean)
+        : [],
+    }) || {}
+
+    return {
+      text: uniqueStrings(textParts).join('\n\n').trim(),
+      metadata: cleanObject({
+        blocks: normalizedBlocks,
+        thoughts,
+        searches,
+        tools,
+        stages,
+        artifacts,
+        refs,
+        kimi_plus: rawMessage.kimiPlus || null,
+        scenario: rawMessage.scenario || null,
+        status: rawMessage.status || null,
+        parent_id: rawMessage.parentId || null,
+        children_message_ids: Array.isArray(rawMessage.childrenMessageIds) ? rawMessage.childrenMessageIds : [],
+      }) || {},
+    }
+  }
+
   function isLikelyMessage(candidate) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false
     const keys = new Set(Object.keys(candidate))
     if (!keys.size) return false
     if (keys.has('chat_id') && keys.size <= 3) return false
     const hasRole = ['role', 'sender', 'sender_type', 'message_type', 'is_bot', 'is_user'].some((key) => keys.has(key))
-    const hasText = ['text', 'content', 'contents', 'parts', 'segments', 'answer', 'query', 'markdown', 'display_content'].some((key) => keys.has(key))
+    const hasText = ['text', 'content', 'contents', 'parts', 'segments', 'answer', 'query', 'markdown', 'display_content', 'blocks'].some((key) => keys.has(key))
     const hasId = ['message_id', 'msg_id', 'id', 'uuid'].some((key) => keys.has(key))
-    const hasTime = ['created_at', 'updated_at', 'timestamp', 'time'].some((key) => keys.has(key))
+    const hasTime = ['created_at', 'updated_at', 'timestamp', 'time', 'createTime'].some((key) => keys.has(key))
     return (hasRole && hasText) || (hasId && hasText) || (hasId && hasTime && hasRole)
   }
 
@@ -250,18 +527,25 @@
         if (rendered) parts.push(rendered)
       }
     }
+    const blockData = messageBlockMetadata(rawMessage)
+    if (blockData.text) parts.push(blockData.text)
     const text = [...new Set(parts)].join('\n\n').trim()
     const attachments = extractAttachments(rawMessage)
     if (!text && !attachments.length) return null
     const role = normalizeRole(rawMessage)
+    const metadata = cleanObject({
+      ...blockData.metadata,
+      updated_at: rawMessage.updated_at || rawMessage.updateTime || null,
+    }) || {}
     return {
       message_id: rawMessage.message_id || rawMessage.msg_id || rawMessage.id || rawMessage.uuid || '',
       role,
       author_name: role === 'user' ? 'You' : role === 'assistant' ? 'Kimi' : null,
-      created_at: rawMessage.created_at || rawMessage.create_time || rawMessage.timestamp || rawMessage.time || rawMessage.updated_at || null,
+      created_at: rawMessage.created_at || rawMessage.create_time || rawMessage.createTime || rawMessage.timestamp || rawMessage.time || rawMessage.updated_at || rawMessage.updateTime || null,
       updated_at: rawMessage.updated_at || null,
       text,
       attachments,
+      metadata,
       raw: rawMessage,
     }
   }
@@ -281,7 +565,13 @@
 
   function extractNormalizedMessages(pages) {
     const candidates = []
-    pages.forEach((page) => collectMessageCandidates(page, candidates))
+    for (const page of pages) {
+      if (Array.isArray(page?.messages) && page.messages.some((item) => isLikelyMessage(item))) {
+        candidates.push(...page.messages.filter((item) => isLikelyMessage(item)))
+        continue
+      }
+      collectMessageCandidates(page, candidates)
+    }
     const seen = new Set()
     const normalized = []
     for (const candidate of candidates) {
@@ -308,8 +598,7 @@
       const page = await apiCall('/kimi.gateway.chat.v1.ChatService/ListMessages', payload)
       pages.push(page)
       const nextCursor = getNextCursor(page)
-      const normalizedMessages = extractNormalizedMessages([page])
-      if (!nextCursor || seenCursors.has(nextCursor) || normalizedMessages.length < PAGE_SIZE) break
+      if (!nextCursor || seenCursors.has(nextCursor)) break
       seenCursors.add(nextCursor)
       cursor = nextCursor
     }
@@ -373,7 +662,7 @@
   const button = createButton()
 
   async function runExport() {
-    const historyGroups = collectHistory()
+    const historyGroups = await fetchHistoryFromApi()
     const chats = historyGroups.flatMap((group) => group.items)
     if (!chats.length) throw new Error('No chats found on the history page.')
 
