@@ -1,6 +1,57 @@
-import { FormEvent, useEffect, useState } from 'react'
-import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { marked } from 'marked'
 import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type SessionState } from './api'
+
+// ── Marked config ──
+
+marked.setOptions({
+  gfm: true,
+  breaks: true,
+})
+
+function renderMarkdown(text: string): string {
+  return marked.parse(text, { async: false }) as string
+}
+
+// ── Time helpers ──
+
+function timeAgo(value?: string | null): string {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const now = Date.now()
+  const diff = now - d.getTime()
+  const seconds = Math.floor(diff / 1000)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days}d ago`
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months}mo ago`
+  const years = Math.floor(months / 12)
+  return `${years}y ago`
+}
+
+function formatDateFull(value?: string | null): string {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) +
+    ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatDateShort(value?: string | null): string {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+// ── App root ──
 
 function App() {
   const [session, setSession] = useState<SessionState | null>(null)
@@ -182,6 +233,8 @@ function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
   )
 }
 
+// ── Dashboard ──
+
 function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState('')
@@ -271,25 +324,48 @@ function DashboardPage() {
   )
 }
 
+// ── Imports (with polling) ──
+
 function ImportsPage() {
   const [imports, setImports] = useState<ImportRecord[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const loadImports = async () => {
+  const loadImports = useCallback(async () => {
     try {
-      setImports(await api.listImports())
+      const items = await api.listImports()
+      setImports(items)
       setError('')
+      return items
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load imports.')
+      return []
     }
-  }
+  }, [])
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }, [])
+
+  const startPolling = useCallback(() => {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      const items = await loadImports()
+      const hasPending = items.some((i) => i.status === 'processing' || i.status === 'queued')
+      if (!hasPending) stopPolling()
+    }, 2000)
+  }, [loadImports, stopPolling])
 
   useEffect(() => {
     void loadImports()
-  }, [])
+    return stopPolling
+  }, [loadImports, stopPolling])
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -299,7 +375,11 @@ function ImportsPage() {
     try {
       await api.uploadImport(selectedFile)
       setSelectedFile(null)
+      // Reset the file input
+      const fileInput = document.querySelector('.upload-zone input[type="file"]') as HTMLInputElement | null
+      if (fileInput) fileInput.value = ''
       await loadImports()
+      startPolling()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed.')
     } finally {
@@ -313,6 +393,8 @@ function ImportsPage() {
     const file = e.dataTransfer.files[0]
     if (file) setSelectedFile(file)
   }
+
+  const hasPending = imports.some((i) => i.status === 'processing' || i.status === 'queued')
 
   return (
     <div className="page">
@@ -353,7 +435,10 @@ function ImportsPage() {
       <div className="panel">
         <div className="panel-header">
           <h3>History</h3>
-          <button className="btn btn-ghost" type="button" onClick={() => void loadImports()}>Refresh</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {hasPending && <span className="badge badge-status badge-processing">Processing</span>}
+            <button className="btn btn-ghost" type="button" onClick={() => void loadImports()}>Refresh</button>
+          </div>
         </div>
         <div className="panel-body">
           <ImportList items={imports} />
@@ -363,7 +448,10 @@ function ImportsPage() {
   )
 }
 
+// ── Conversations (with provider chips) ──
+
 const PAGE_SIZE = 50
+const PROVIDERS = ['chatgpt', 'claude', 'gemini'] as const
 
 function ConversationsPage() {
   const [provider, setProvider] = useState('')
@@ -374,16 +462,18 @@ function ConversationsPage() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const isSearch = query.trim().length > 0
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
-  const load = async () => {
+  const load = useCallback(async (prov?: string) => {
+    const activeProvider = prov ?? provider
     setBusy(true)
     try {
-      if (isSearch) {
-        const result = await api.searchConversations(query.trim(), provider || undefined, PAGE_SIZE)
+      if (query.trim()) {
+        const result = await api.searchConversations(query.trim(), activeProvider || undefined, PAGE_SIZE)
         setItems(result)
-        setHasMore(false) // search endpoint has no offset support
+        setHasMore(false)
       } else {
-        const result = await api.listConversations(provider || undefined, PAGE_SIZE, 0)
+        const result = await api.listConversations(activeProvider || undefined, PAGE_SIZE, 0)
         setItems(result)
         setHasMore(result.length >= PAGE_SIZE)
       }
@@ -393,7 +483,7 @@ function ConversationsPage() {
     } finally {
       setBusy(false)
     }
-  }
+  }, [provider, query])
 
   const loadMore = async () => {
     if (isSearch || loadingMore) return
@@ -409,6 +499,12 @@ function ConversationsPage() {
     }
   }
 
+  const toggleProvider = (p: string) => {
+    const next = provider === p ? '' : p
+    setProvider(next)
+    void load(next)
+  }
+
   useEffect(() => {
     void load()
   }, [])
@@ -422,27 +518,36 @@ function ConversationsPage() {
       </header>
 
       <form className="toolbar" onSubmit={(e) => { e.preventDefault(); void load() }}>
-        <div className="field">
-          <label>Search</label>
+        <div className="field" style={{ flex: 1 }}>
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search messages..."
           />
         </div>
-        <div className="field field-sm">
-          <label>Provider</label>
-          <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="">All</option>
-            <option value="chatgpt">ChatGPT</option>
-            <option value="gemini">Gemini</option>
-            <option value="claude">Claude</option>
-          </select>
-        </div>
         <button className="btn btn-primary" type="submit" disabled={busy}>
           {busy ? 'Searching...' : 'Search'}
         </button>
       </form>
+
+      <div className="provider-chips">
+        {PROVIDERS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className={`chip ${provider === p ? 'chip-active' : ''}`}
+            onClick={() => toggleProvider(p)}
+          >
+            <ProviderBadge provider={p} />
+          </button>
+        ))}
+        {provider && (
+          <button type="button" className="btn btn-ghost" style={{ fontSize: '0.75rem' }} onClick={() => toggleProvider(provider)}>
+            Clear filter
+          </button>
+        )}
+      </div>
 
       <div className="panel">
         <div className="panel-header">
@@ -453,11 +558,11 @@ function ConversationsPage() {
         </div>
         <div className="panel-body">
           {error && <p className="error-text" style={{ padding: '0.75rem 1rem' }}>{error}</p>}
-          <ConversationList items={items} showSnippet />
+          <ConversationList items={items} showSnippet={isSearch} searchQuery={isSearch ? query.trim() : undefined} />
           {hasMore && (
             <div className="load-more">
               <button className="btn btn-secondary" type="button" onClick={() => void loadMore()} disabled={loadingMore}>
-                {loadingMore ? 'Loading...' : `Load more conversations`}
+                {loadingMore ? 'Loading...' : 'Load more conversations'}
               </button>
             </div>
           )}
@@ -467,24 +572,47 @@ function ConversationsPage() {
   )
 }
 
+// ── Conversation detail (with markdown + search highlight) ──
+
 function ConversationDetailPage() {
   const { conversationId } = useParams()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [conversation, setConversation] = useState<ConversationDetail | null>(null)
   const [error, setError] = useState('')
+  const highlightQuery = searchParams.get('q') || ''
+  const scrolledRef = useRef(false)
 
   useEffect(() => {
     if (!conversationId) return
+    scrolledRef.current = false
     api.getConversation(conversationId).then(setConversation).catch((err: Error) => setError(err.message))
   }, [conversationId])
+
+  // After render, scroll to first highlighted match
+  useEffect(() => {
+    if (!conversation || !highlightQuery || scrolledRef.current) return
+    scrolledRef.current = true
+    // Wait a tick for DOM to render
+    requestAnimationFrame(() => {
+      const firstMatch = document.querySelector('.search-highlight')
+      if (firstMatch) {
+        firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    })
+  }, [conversation, highlightQuery])
 
   if (error) return <PageState title="Error" message={error} />
   if (!conversation) return <PageState title="Loading" message="Fetching conversation..." />
 
+  const backTo = highlightQuery
+    ? `/conversations?q=${encodeURIComponent(highlightQuery)}`
+    : '/conversations'
+
   return (
     <div className="page page-wide">
-      <button className="back-link btn btn-ghost" onClick={() => navigate('/conversations')} type="button" style={{ marginBottom: '0.75rem', padding: '0.25rem 0.375rem' }}>
-        {icons.back} Back to conversations
+      <button className="back-link btn btn-ghost" onClick={() => navigate(backTo)} type="button" style={{ marginBottom: '0.75rem', padding: '0.25rem 0.375rem' }}>
+        {icons.back} Back to {highlightQuery ? 'results' : 'conversations'}
       </button>
 
       <div className="detail-header">
@@ -495,11 +623,11 @@ function ConversationDetailPage() {
       <div className="detail-meta">
         <dl style={{ margin: 0 }}>
           <dt>Created</dt>
-          <dd>{formatDate(conversation.created_at)}</dd>
+          <dd>{formatDateShort(conversation.created_at)}</dd>
         </dl>
         <dl style={{ margin: 0 }}>
           <dt>Updated</dt>
-          <dd>{formatDate(conversation.updated_at)}</dd>
+          <dd>{formatDateShort(conversation.updated_at)}</dd>
         </dl>
         <dl style={{ margin: 0 }}>
           <dt>Messages</dt>
@@ -514,30 +642,41 @@ function ConversationDetailPage() {
       <div className="panel">
         <div className="message-thread">
           {conversation.messages.map((msg) => (
-            <div className={`message-block ${msg.role === 'assistant' ? 'message-block-assistant' : ''}`} key={msg.id}>
-              <div className="message-header">
-                <span className={`role-marker role-${msg.role}`}>{msg.role}</span>
-                <span className="message-author">{msg.author_name || roleDisplayName(msg.role)}</span>
-                <span className="message-info">
-                  #{msg.sequence}{msg.created_at ? ` · ${formatDate(msg.created_at)}` : ''}{msg.model ? ` · ${msg.model}` : ''}
-                </span>
-              </div>
-              <pre className="message-body">{msg.text}</pre>
-              {msg.attachments.length > 0 && (
-                <div className="attachments-section">
-                  <div className="attachments-label">Attachments</div>
-                  {msg.attachments.map((att) => (
-                    <AttachmentItem key={att.id} attachment={att} />
-                  ))}
-                </div>
-              )}
-            </div>
+            <MessageBlock key={msg.id} msg={msg} highlightQuery={highlightQuery} />
           ))}
         </div>
       </div>
     </div>
   )
 }
+
+function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messages'][0]; highlightQuery: string }) {
+  const html = renderMarkdown(msg.text)
+  const highlighted = highlightQuery ? highlightHtml(html, highlightQuery) : html
+
+  return (
+    <div className={`message-block ${msg.role === 'assistant' ? 'message-block-assistant' : ''}`}>
+      <div className="message-header">
+        <span className={`role-marker role-${msg.role}`}>{msg.role}</span>
+        <span className="message-author">{msg.author_name || roleDisplayName(msg.role)}</span>
+        <span className="message-info" title={formatDateFull(msg.created_at)}>
+          #{msg.sequence}{msg.created_at ? ` · ${timeAgo(msg.created_at)}` : ''}{msg.model ? ` · ${msg.model}` : ''}
+        </span>
+      </div>
+      <div className="message-body markdown-body" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      {msg.attachments.length > 0 && (
+        <div className="attachments-section">
+          <div className="attachments-label">Attachments</div>
+          {msg.attachments.map((att) => (
+            <AttachmentItem key={att.id} attachment={att} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Settings ──
 
 function SettingsPage() {
   const [currentPassword, setCurrentPassword] = useState('')
@@ -635,7 +774,7 @@ function ImportList({ items, compact = false }: { items: ImportRecord[]; compact
           <span className="import-filename">{item.original_filename}</span>
           <ProviderBadge provider={item.provider} />
           <StatusBadge status={item.status} />
-          <span className="import-meta">{formatDate(item.created_at)}</span>
+          <span className="import-meta" title={formatDateFull(item.created_at)}>{timeAgo(item.created_at)}</span>
           {!compact && (
             <>
               <span className="import-stats">
@@ -651,7 +790,7 @@ function ImportList({ items, compact = false }: { items: ImportRecord[]; compact
   )
 }
 
-function ConversationList({ items, showSnippet = false }: { items: Array<ConversationListItem & { snippet?: string }>; showSnippet?: boolean }) {
+function ConversationList({ items, showSnippet = false, searchQuery }: { items: Array<ConversationListItem & { snippet?: string }>; showSnippet?: boolean; searchQuery?: string }) {
   const navigate = useNavigate()
 
   if (!items.length) {
@@ -660,18 +799,23 @@ function ConversationList({ items, showSnippet = false }: { items: Array<Convers
 
   return (
     <div>
-      {items.map((item) => (
-        <button className="conv-row" key={item.id} type="button" onClick={() => navigate(`/conversations/${item.id}`)}>
-          <span className="conv-title">{item.title}</span>
-          <span className="conv-badge"><ProviderBadge provider={item.provider} /></span>
-          <span className="conv-meta">
-            {item.message_count} msgs · {formatDate(item.updated_at || item.last_message_at)}
-          </span>
-          {showSnippet && item.snippet && (
-            <span className="conv-snippet" dangerouslySetInnerHTML={{ __html: item.snippet }} />
-          )}
-        </button>
-      ))}
+      {items.map((item) => {
+        const target = searchQuery
+          ? `/conversations/${item.id}?q=${encodeURIComponent(searchQuery)}`
+          : `/conversations/${item.id}`
+        return (
+          <button className="conv-row" key={item.id} type="button" onClick={() => navigate(target)}>
+            <span className="conv-title">{item.title}</span>
+            <span className="conv-badge"><ProviderBadge provider={item.provider} /></span>
+            <span className="conv-meta" title={formatDateFull(item.updated_at || item.last_message_at)}>
+              {item.message_count} msgs · {timeAgo(item.updated_at || item.last_message_at)}
+            </span>
+            {showSnippet && item.snippet && (
+              <span className="conv-snippet" dangerouslySetInnerHTML={{ __html: item.snippet }} />
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -711,14 +855,6 @@ function roleDisplayName(role: string) {
   return role
 }
 
-function formatDate(value?: string | null) {
-  if (!value) return '—'
-  const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return value
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) +
-    ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-}
-
 function describeAttachment(metadata?: Record<string, unknown> | null) {
   if (!metadata) return ''
   const source = typeof metadata.source === 'string' ? metadata.source.replace(/_/g, ' ') : ''
@@ -737,6 +873,25 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1048576).toFixed(1)} MB`
+}
+
+/**
+ * Highlight search terms in already-rendered HTML.
+ * Walks text nodes only (skips tags) to avoid breaking markup.
+ */
+function highlightHtml(html: string, query: string): string {
+  if (!query) return html
+  // Escape regex special chars in the query
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Split HTML into tags and text segments
+  const parts = html.split(/(<[^>]*>)/g)
+  const re = new RegExp(`(${escaped})`, 'gi')
+  return parts.map((part) => {
+    // If it's a tag, leave it alone
+    if (part.startsWith('<')) return part
+    // Replace matches in text content
+    return part.replace(re, '<mark class="search-highlight">$1</mark>')
+  }).join('')
 }
 
 export default App
