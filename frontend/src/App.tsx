@@ -4,7 +4,7 @@ import { marked } from 'marked'
 import {
   MessageSquareText, Upload, BarChart3, Settings, LogOut, ChevronLeft,
   Search, Loader2, Paperclip, Eye, EyeOff, ExternalLink,
-  ArrowUpFromLine, ChevronRight, Trash2,
+  ArrowUpFromLine, ChevronRight, Trash2, Globe, FileText, Sparkles, Wrench,
 } from 'lucide-react'
 import { cn } from './cn'
 import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type SessionState } from './api'
@@ -682,6 +682,7 @@ function ConversationDetailPage() {
 function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messages'][0]; highlightQuery: string }) {
   const html = renderMarkdown(msg.text)
   const highlighted = highlightQuery ? highlightHtml(html, highlightQuery) : html
+  const research = getKimiResearchData(msg.metadata)
 
   return (
     <div className={cn('px-5 py-4 border-b border-zinc-100 last:border-b-0', msg.role === 'assistant' && 'bg-zinc-50/70')}>
@@ -693,6 +694,7 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
         </span>
       </div>
       <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      {research && <KimiResearchBlock data={research} highlightQuery={highlightQuery} />}
       {msg.attachments.length > 0 && (
         <div className="mt-3 pt-3 border-t border-zinc-200">
           <p className="text-2xs font-semibold uppercase tracking-wider text-zinc-400 mb-1.5">Attachments</p>
@@ -700,6 +702,92 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
         </div>
       )}
     </div>
+  )
+}
+
+function KimiResearchBlock({ data, highlightQuery }: { data: KimiResearchData; highlightQuery: string }) {
+  const reportHtml = data.markdownArtifact?.content ? renderMarkdown(data.markdownArtifact.content) : ''
+  const highlightedReport = reportHtml && highlightQuery ? highlightHtml(reportHtml, highlightQuery) : reportHtml
+
+  return (
+    <div className="mt-4 space-y-4 border-t border-zinc-200 pt-4">
+      {data.thoughts.length > 0 && (
+        <SectionCard title="Research Trace" icon={<Sparkles className="w-3.5 h-3.5" />}>
+          <div className="space-y-2">
+            {data.thoughts.map((thought, index) => (
+              <div key={`${thought.created_at || 'thought'}-${index}`} className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-[0.8125rem] text-zinc-700">
+                {thought.text}
+              </div>
+            ))}
+            {data.searches.map((search, index) => (
+              <div key={`${search.created_at || 'search'}-${index}`} className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-[0.8125rem] text-zinc-700">
+                <div className="mb-1 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-zinc-400">
+                  <Globe className="h-3 w-3" />
+                  Searched
+                </div>
+                {search.keywords.length > 0 ? search.keywords.join(', ') : 'Search activity'}
+              </div>
+            ))}
+            {data.tools.map((tool, index) => (
+              <div key={`${tool.tool_call_id || tool.name || 'tool'}-${index}`} className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-[0.8125rem] text-zinc-700">
+                <div className="mb-1 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-zinc-400">
+                  <Wrench className="h-3 w-3" />
+                  Used {tool.name || 'tool'}
+                </div>
+                <pre className="whitespace-pre-wrap break-words font-mono text-xs text-zinc-600">{formatToolSummary(tool)}</pre>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      )}
+
+      {(data.markdownArtifact || data.htmlArtifact) && (
+        <SectionCard title="Generated Report" icon={<FileText className="w-3.5 h-3.5" />}>
+          <div className="space-y-3">
+            {data.markdownArtifact && highlightedReport && (
+              <div>
+                <p className="mb-2 text-2xs font-semibold uppercase tracking-wider text-zinc-400">Markdown Report</p>
+                <div className="markdown-body rounded-md border border-zinc-200 bg-white p-4 text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlightedReport }} />
+              </div>
+            )}
+            {data.htmlArtifact && (
+              <details className="rounded-md border border-zinc-200 bg-white">
+                <summary className="cursor-pointer list-none px-3 py-2 text-[0.8125rem] font-medium text-zinc-700">Interactive report preview</summary>
+                <div className="border-t border-zinc-200 p-3">
+                  <iframe title={data.htmlArtifact.title || 'Interactive report'} srcDoc={data.htmlArtifact.content} className="h-[560px] w-full rounded-md border border-zinc-200 bg-white" sandbox="allow-scripts allow-popups" />
+                </div>
+              </details>
+            )}
+          </div>
+        </SectionCard>
+      )}
+
+      {data.references.length > 0 && (
+        <SectionCard title="Sources" icon={<Globe className="w-3.5 h-3.5" />}>
+          <div className="grid gap-2">
+            {data.references.map((ref, index) => (
+              <a key={`${ref.url}-${index}`} href={ref.url} target="_blank" rel="noreferrer" className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-[0.8125rem] text-zinc-700 hover:border-violet-300 hover:bg-violet-50/40">
+                <div className="font-medium text-zinc-800">{ref.title || ref.url}</div>
+                {ref.snippet && <div className="mt-1 text-xs text-zinc-500">{ref.snippet}</div>}
+                <div className="mt-1 text-2xs text-zinc-400">{[ref.site_name, ref.publish_time ? formatDateShort(ref.publish_time) : ''].filter(Boolean).join(' · ')}</div>
+              </a>
+            ))}
+          </div>
+        </SectionCard>
+      )}
+    </div>
+  )
+}
+
+function SectionCard({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section>
+      <div className="mb-2 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-zinc-400">
+        {icon}
+        {title}
+      </div>
+      {children}
+    </section>
   )
 }
 
@@ -910,6 +998,99 @@ function highlightHtml(html: string, query: string): string {
   const parts = html.split(/(<[^>]*>)/g)
   const re = new RegExp(`(${escaped})`, 'gi')
   return parts.map((part) => part.startsWith('<') ? part : part.replace(re, '<mark class="search-hl">$1</mark>')).join('')
+}
+
+type KimiResearchRef = {
+  url: string
+  title?: string
+  snippet?: string
+  site_name?: string
+  publish_time?: string
+}
+
+type KimiResearchArtifact = {
+  artifact_id?: string
+  type?: string
+  version?: string
+  path?: string
+  title?: string
+  content: string
+}
+
+type KimiResearchData = {
+  thoughts: Array<{ text: string; created_at?: string }>
+  searches: Array<{ keywords: string[]; created_at?: string }>
+  tools: Array<{ name?: string; tool_call_id?: string; status?: string; args?: unknown; contents?: unknown }>
+  references: KimiResearchRef[]
+  markdownArtifact?: KimiResearchArtifact
+  htmlArtifact?: KimiResearchArtifact
+}
+
+function getKimiResearchData(metadata?: Record<string, unknown> | null): KimiResearchData | null {
+  if (!metadata) return null
+  const thoughts = asArray(metadata.thoughts)
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((item) => ({ text: asString(item.text), created_at: asString(item.created_at) || undefined }))
+    .filter((item) => item.text)
+  const searches = asArray(metadata.searches)
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((item) => ({ keywords: asArray(item.keywords).map((value) => asString(value)).filter(Boolean), created_at: asString(item.created_at) || undefined }))
+  const tools = asArray(metadata.tools)
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((item) => ({ name: asString(item.name) || undefined, tool_call_id: asString(item.tool_call_id) || undefined, status: asString(item.status) || undefined, args: item.args, contents: item.contents }))
+  const refs = asRecord(metadata.refs)
+  const references = [...asArray(refs?.used_search_chunks), ...asArray(refs?.search_chunks)]
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((item) => ({ url: asString(item.url), title: asString(item.title) || undefined, snippet: asString(item.snippet) || undefined, site_name: asString(item.site_name) || undefined, publish_time: asString(item.publish_time) || undefined }))
+    .filter((item) => item.url)
+    .filter((item, index, array) => array.findIndex((other) => other.url === item.url) === index)
+  const artifacts = asArray(metadata.artifacts)
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((item) => ({ artifact_id: asString(item.artifact_id) || undefined, type: asString(item.type) || undefined, version: asString(item.version) || undefined, path: asString(item.path) || undefined, title: asString(item.title) || undefined, content: asString(item.content) }))
+    .filter((item) => item.content)
+  const markdownArtifact = artifacts.find((item) => item.type === 'ARTIFACT_TYPE_MARKDOWN')
+  const htmlArtifact = artifacts.find((item) => item.type === 'ARTIFACT_TYPE_CODE' || item.path === 'index.html')
+
+  if (!thoughts.length && !searches.length && !tools.length && !references.length && !markdownArtifact && !htmlArtifact) return null
+  return { thoughts, searches, tools, references, markdownArtifact, htmlArtifact }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value != null
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function formatToolSummary(tool: { name?: string; status?: string; args?: unknown; contents?: unknown }) {
+  const parts = [
+    tool.status ? `status: ${tool.status}` : '',
+    tool.args ? `args: ${safeJson(tool.args)}` : '',
+    tool.contents ? `contents: ${safeJson(tool.contents)}` : '',
+  ].filter(Boolean)
+  return parts.join('\n') || (tool.name || 'tool activity')
+}
+
+function safeJson(value: unknown) {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }
 
 export default App

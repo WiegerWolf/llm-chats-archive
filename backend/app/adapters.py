@@ -85,7 +85,7 @@ def parse_kimi_capture_bundle(export_path: Path) -> dict[str, Any]:
         for raw_message in raw_messages:
             if not isinstance(raw_message, dict):
                 continue
-            normalized_message = normalize_kimi_message(raw_message)
+            normalized_message = normalize_kimi_export_message(raw_message)
             if normalized_message is None:
                 continue
             messages.append(normalized_message)
@@ -504,6 +504,43 @@ def extract_kimi_capture_messages(chat_entry: dict[str, Any]) -> list[dict[str, 
     return deduped
 
 
+def normalize_kimi_export_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
+    if is_normalized_kimi_export_message(raw_message):
+        return normalize_exported_kimi_message(raw_message)
+    return normalize_kimi_message(raw_message)
+
+
+def is_normalized_kimi_export_message(raw_message: dict[str, Any]) -> bool:
+    return all(key in raw_message for key in ("role", "text", "attachments")) and any(
+        key in raw_message for key in ("message_id", "created_at", "metadata", "raw")
+    )
+
+
+def normalize_exported_kimi_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
+    text = str(raw_message.get("text") or "").strip()
+    attachments = normalize_import_attachments(raw_message.get("attachments"))
+    if not text and not attachments:
+        return None
+
+    role = normalize_kimi_role(raw_message)
+    metadata = raw_message.get("metadata") if isinstance(raw_message.get("metadata"), dict) else {}
+    content = raw_message.get("raw") if isinstance(raw_message.get("raw"), dict) else raw_message.get("content")
+    if not isinstance(content, dict):
+        content = {"raw": raw_message}
+
+    return {
+        "provider_message_id": extract_first(raw_message, ["provider_message_id", "message_id", "msg_id", "id", "uuid"]),
+        "role": role,
+        "author_name": raw_message.get("author_name") or ("You" if role == "user" else "Kimi" if role == "assistant" else None),
+        "model": extract_first(raw_message, ["model", "model_name"]),
+        "created_at": extract_timestamp(raw_message, ["created_at", "create_time", "createTime", "timestamp", "time", "updated_at", "updateTime"]),
+        "text": text or format_attachment_lines(attachments),
+        "content": content,
+        "metadata": metadata,
+        "attachments": attachments,
+    }
+
+
 def collect_kimi_message_candidates(value: Any, output: list[dict[str, Any]]) -> None:
     if isinstance(value, dict):
         if is_likely_kimi_message(value):
@@ -556,6 +593,28 @@ def normalize_kimi_message(raw_message: dict[str, Any]) -> dict[str, Any] | None
         "metadata": metadata,
         "attachments": attachments,
     }
+
+
+def normalize_import_attachments(raw_attachments: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_attachments, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for attachment in raw_attachments:
+        if not isinstance(attachment, dict):
+            continue
+        filename = str(attachment.get("filename") or attachment.get("name") or "attachment").strip() or "attachment"
+        metadata = attachment.get("metadata") if isinstance(attachment.get("metadata"), dict) else {}
+        normalized.append(
+            {
+                "filename": filename,
+                "mime_type": attachment.get("mime_type"),
+                "blob_path": attachment.get("blob_path"),
+                "sha256": attachment.get("sha256"),
+                "metadata": metadata,
+            }
+        )
+    return normalized
 
 
 def normalize_kimi_role(raw_message: dict[str, Any]) -> str:
