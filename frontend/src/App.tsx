@@ -209,9 +209,9 @@ function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
           <p>Unified LLM export viewer</p>
         </div>
         <nav className="sidebar-nav">
-          <NavLink to="/" end>{icons.dashboard} Dashboard</NavLink>
+          <NavLink to="/" end>{icons.conversations} Conversations</NavLink>
           <NavLink to="/imports">{icons.imports} Imports</NavLink>
-          <NavLink to="/conversations">{icons.conversations} Conversations</NavLink>
+          <NavLink to="/stats">{icons.dashboard} Stats</NavLink>
           <NavLink to="/settings">{icons.settings} Settings</NavLink>
         </nav>
         <div className="sidebar-footer">
@@ -222,10 +222,10 @@ function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
       </aside>
       <main className="main-content">
         <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/imports" element={<ImportsPage />} />
-          <Route path="/conversations" element={<ConversationsPage />} />
+          <Route path="/" element={<ConversationsPage />} />
           <Route path="/conversations/:conversationId" element={<ConversationDetailPage />} />
+          <Route path="/imports" element={<ImportsPage />} />
+          <Route path="/stats" element={<StatsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
@@ -235,7 +235,8 @@ function ArchiveShell({ onLogout }: { onLogout: () => Promise<void> }) {
 
 // ── Dashboard ──
 
-function DashboardPage() {
+function StatsPage() {
+  const navigate = useNavigate()
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState('')
 
@@ -243,14 +244,36 @@ function DashboardPage() {
     api.getDashboard().then(setData).catch((err: Error) => setError(err.message))
   }, [])
 
-  if (error) return <PageState title="Dashboard" message={error} />
-  if (!data) return <PageState title="Dashboard" message="Loading..." />
+  if (error) return <PageState title="Stats" message={error} />
+  if (!data) return <PageState title="Stats" message="Loading..." />
+
+  const isEmpty = data.conversation_count === 0 && data.import_count === 0
+
+  if (isEmpty) {
+    return (
+      <div className="page">
+        <header className="page-header">
+          <div>
+            <h2>Stats</h2>
+          </div>
+        </header>
+        <div className="onboarding-card">
+          <div className="onboarding-icon">{icons.imports}</div>
+          <h3>No data yet</h3>
+          <p>Upload a ChatGPT, Claude, or Gemini export to start browsing your conversations.</p>
+          <button className="btn btn-primary" type="button" onClick={() => navigate('/imports')}>
+            Go to Imports
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="page page-wide">
       <header className="page-header">
         <div>
-          <h2>Dashboard</h2>
+          <h2>Stats</h2>
           <p className="page-desc">Archive overview across all providers</p>
         </div>
       </header>
@@ -279,12 +302,12 @@ function DashboardPage() {
             {data.providers.length ? (
               <ul className="provider-list">
                 {data.providers.map((p) => (
-                  <li key={p.provider}>
+                  <li key={p.provider} className="provider-row-link" onClick={() => navigate(`/?provider=${encodeURIComponent(p.provider)}`)}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                       <ProviderBadge provider={p.provider} />
                       {p.provider}
                     </span>
-                    <span className="provider-count">{p.count.toLocaleString()}</span>
+                    <span className="provider-count">{p.count.toLocaleString()} &rsaquo;</span>
                   </li>
                 ))}
               </ul>
@@ -448,32 +471,52 @@ function ImportsPage() {
   )
 }
 
-// ── Conversations (with provider chips) ──
+// ── Conversations (debounced search, provider chips with counts) ──
 
 const PAGE_SIZE = 50
-const PROVIDERS = ['chatgpt', 'claude', 'gemini'] as const
+const DEBOUNCE_MS = 300
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(id)
+  }, [value, delay])
+  return debounced
+}
 
 function ConversationsPage() {
-  const [provider, setProvider] = useState('')
-  const [query, setQuery] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [provider, setProvider] = useState(searchParams.get('provider') || '')
+  const [query, setQuery] = useState(searchParams.get('q') || '')
   const [items, setItems] = useState<Array<ConversationListItem & { snippet?: string }>>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(false)
-  const isSearch = query.trim().length > 0
-  const searchInputRef = useRef<HTMLInputElement>(null)
+  const [providerCounts, setProviderCounts] = useState<Record<string, number>>({})
+  const debouncedQuery = useDebounce(query, DEBOUNCE_MS)
+  const isSearch = debouncedQuery.trim().length > 0
+  const initialLoadDone = useRef(false)
 
-  const load = useCallback(async (prov?: string) => {
-    const activeProvider = prov ?? provider
+  // Fetch provider counts once
+  useEffect(() => {
+    api.getDashboard().then((d) => {
+      const counts: Record<string, number> = {}
+      for (const p of d.providers) counts[p.provider.toLowerCase()] = p.count
+      setProviderCounts(counts)
+    }).catch(() => {})
+  }, [])
+
+  const load = useCallback(async (prov: string, q: string) => {
     setBusy(true)
     try {
-      if (query.trim()) {
-        const result = await api.searchConversations(query.trim(), activeProvider || undefined, PAGE_SIZE)
+      if (q.trim()) {
+        const result = await api.searchConversations(q.trim(), prov || undefined, PAGE_SIZE)
         setItems(result)
         setHasMore(false)
       } else {
-        const result = await api.listConversations(activeProvider || undefined, PAGE_SIZE, 0)
+        const result = await api.listConversations(prov || undefined, PAGE_SIZE, 0)
         setItems(result)
         setHasMore(result.length >= PAGE_SIZE)
       }
@@ -483,7 +526,19 @@ function ConversationsPage() {
     } finally {
       setBusy(false)
     }
-  }, [provider, query])
+  }, [])
+
+  // React to debounced query or provider changes
+  useEffect(() => {
+    // Skip the very first render — we handle that with the initial load below
+    if (!initialLoadDone.current) return
+    void load(provider, debouncedQuery)
+  }, [debouncedQuery, provider, load])
+
+  // Initial load
+  useEffect(() => {
+    void load(provider, debouncedQuery).then(() => { initialLoadDone.current = true })
+  }, [])
 
   const loadMore = async () => {
     if (isSearch || loadingMore) return
@@ -502,12 +557,20 @@ function ConversationsPage() {
   const toggleProvider = (p: string) => {
     const next = provider === p ? '' : p
     setProvider(next)
-    void load(next)
+    // Update URL without navigation
+    const params = new URLSearchParams(searchParams)
+    if (next) params.set('provider', next); else params.delete('provider')
+    setSearchParams(params, { replace: true })
   }
 
-  useEffect(() => {
-    void load()
-  }, [])
+  const handleQueryChange = (value: string) => {
+    setQuery(value)
+    const params = new URLSearchParams(searchParams)
+    if (value) params.set('q', value); else params.delete('q')
+    setSearchParams(params, { replace: true })
+  }
+
+  const knownProviders = ['chatgpt', 'claude', 'gemini'] as const
 
   return (
     <div className="page">
@@ -517,22 +580,19 @@ function ConversationsPage() {
         </div>
       </header>
 
-      <form className="toolbar" onSubmit={(e) => { e.preventDefault(); void load() }}>
+      <div className="toolbar">
         <div className="field" style={{ flex: 1 }}>
           <input
-            ref={searchInputRef}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => handleQueryChange(e.target.value)}
             placeholder="Search messages..."
           />
         </div>
-        <button className="btn btn-primary" type="submit" disabled={busy}>
-          {busy ? 'Searching...' : 'Search'}
-        </button>
-      </form>
+        {busy && <span className="muted" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Searching...</span>}
+      </div>
 
       <div className="provider-chips">
-        {PROVIDERS.map((p) => (
+        {knownProviders.map((p) => (
           <button
             key={p}
             type="button"
@@ -540,6 +600,9 @@ function ConversationsPage() {
             onClick={() => toggleProvider(p)}
           >
             <ProviderBadge provider={p} />
+            {providerCounts[p] != null && (
+              <span className="chip-count">{providerCounts[p].toLocaleString()}</span>
+            )}
           </button>
         ))}
         {provider && (
@@ -551,14 +614,14 @@ function ConversationsPage() {
 
       <div className="panel">
         <div className="panel-header">
-          <h3>{isSearch ? `Results for "${query.trim()}"` : `All conversations`}</h3>
+          <h3>{isSearch ? `Results for "${debouncedQuery.trim()}"` : `All conversations`}</h3>
           <span className="muted" style={{ fontSize: '0.75rem' }}>
             {items.length} shown{hasMore ? '+' : ''}
           </span>
         </div>
         <div className="panel-body">
           {error && <p className="error-text" style={{ padding: '0.75rem 1rem' }}>{error}</p>}
-          <ConversationList items={items} showSnippet={isSearch} searchQuery={isSearch ? query.trim() : undefined} />
+          <ConversationList items={items} showSnippet={isSearch} searchQuery={isSearch ? debouncedQuery.trim() : undefined} />
           {hasMore && (
             <div className="load-more">
               <button className="btn btn-secondary" type="button" onClick={() => void loadMore()} disabled={loadingMore}>
@@ -606,8 +669,8 @@ function ConversationDetailPage() {
   if (!conversation) return <PageState title="Loading" message="Fetching conversation..." />
 
   const backTo = highlightQuery
-    ? `/conversations?q=${encodeURIComponent(highlightQuery)}`
-    : '/conversations'
+    ? `/?q=${encodeURIComponent(highlightQuery)}`
+    : '/'
 
   return (
     <div className="page page-wide">

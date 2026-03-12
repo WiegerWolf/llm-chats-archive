@@ -877,6 +877,65 @@ button:not([class]):disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--accent-subtle);
 }
 
+.chip-count {
+  font-size: 0.625rem;
+  color: var(--text-tertiary);
+  margin-left: 0.125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-active .chip-count {
+  color: var(--accent);
+}
+
+/* ── Onboarding card ── */
+
+.onboarding-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 3rem 2rem;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  text-align: center;
+}
+
+.onboarding-card h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.onboarding-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  max-width: 360px;
+}
+
+.onboarding-icon {
+  width: 32px;
+  height: 32px;
+  color: var(--text-tertiary);
+}
+
+.onboarding-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Clickable provider rows ── */
+
+.provider-row-link {
+  cursor: pointer;
+  transition: background 80ms;
+}
+
+.provider-row-link:hover {
+  background: var(--bg-subtle);
+}
+
 /* ── Attachments ── */
 
 .attachments-section {
