@@ -14,6 +14,8 @@ class ImportParseError(Exception):
 
 def parse_export(export_path: Path) -> dict[str, Any]:
     provider = detect_provider(export_path)
+    if provider == "kimi":
+        return parse_kimi_capture_bundle(export_path)
     if provider == "claude":
         return parse_claude_export(export_path)
     if provider == "chatgpt":
@@ -43,6 +45,8 @@ def detect_provider(export_path: Path) -> str:
                 return "gemini"
     if export_path.suffix.lower() == ".json" or lower_name.endswith(".json"):
         document = load_json_file(export_path)
+        if looks_like_kimi_capture_bundle(document):
+            return "kimi"
         if looks_like_claude(document) or "claude" in lower_name or "anthropic" in lower_name:
             return "claude"
         if looks_like_chatgpt(document):
@@ -50,6 +54,104 @@ def detect_provider(export_path: Path) -> str:
         if looks_like_gemini(document) or "gemini" in lower_name or "bard" in lower_name:
             return "gemini"
     return "unknown"
+
+
+def parse_kimi_capture_bundle(export_path: Path) -> dict[str, Any]:
+    payload = load_json_file(export_path)
+    if not looks_like_kimi_capture_bundle(payload):
+        raise ImportParseError("Kimi capture bundle is missing required fields.")
+
+    history_index = build_kimi_history_index(payload)
+    chats = payload.get("chats") or []
+    if not isinstance(chats, list):
+        raise ImportParseError("Kimi capture bundle did not contain a chat list.")
+
+    normalized: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    message_total = 0
+    attachment_total = 0
+
+    for index, chat_entry in enumerate(chats, start=1):
+        if not isinstance(chat_entry, dict):
+            warnings.append(f"Skipped Kimi chat #{index}: unsupported structure.")
+            continue
+
+        chat_id = str(chat_entry.get("chat_id") or "").strip()
+        raw_history = chat_entry.get("history")
+        history: dict[str, Any] = raw_history if isinstance(raw_history, dict) else history_index.get(chat_id, {})
+        raw_messages = extract_kimi_capture_messages(chat_entry)
+
+        messages: list[dict[str, Any]] = []
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, dict):
+                continue
+            normalized_message = normalize_kimi_message(raw_message)
+            if normalized_message is None:
+                continue
+            messages.append(normalized_message)
+
+        messages.sort(key=lambda item: item.get("created_at") or "")
+        for sequence, message in enumerate(messages, start=1):
+            message["sequence"] = sequence
+
+        if not messages:
+            preview_text = str(history.get("preview_text") or "").strip()
+            if preview_text:
+                messages.append(
+                    {
+                        "provider_message_id": stable_hash(f"kimi-preview:{chat_id or index}"),
+                        "role": "assistant",
+                        "author_name": "Kimi",
+                        "model": None,
+                        "created_at": iso_timestamp(history.get("date_label")),
+                        "text": preview_text,
+                        "content": {"preview_text": preview_text},
+                        "metadata": {"source": "kimi_history_preview"},
+                        "attachments": normalize_kimi_history_attachments(history),
+                        "sequence": 1,
+                    }
+                )
+            else:
+                warnings.append(f"Skipped Kimi chat {chat_id or index}: no messages found.")
+                continue
+
+        title = kimi_chat_title(chat_entry, history, index)
+        created_at = kimi_chat_timestamp(chat_entry, history, ["created_at", "create_time", "created"])
+        updated_at = kimi_chat_timestamp(chat_entry, history, ["updated_at", "update_time", "updated", "modified_at"])
+
+        normalized.append(
+            {
+                "provider": "kimi",
+                "provider_conversation_id": chat_id or stable_hash(f"kimi:{title}:{index}"),
+                "title": title,
+                "created_at": created_at or messages[0].get("created_at"),
+                "updated_at": updated_at or messages[-1].get("created_at"),
+                "metadata": {
+                    "history_group": history.get("group_label"),
+                    "history_date": history.get("date_label"),
+                    "preview_text": history.get("preview_text"),
+                    "source": "kimi",
+                },
+                "messages": messages,
+            }
+        )
+        message_total += len(messages)
+        attachment_total += sum(len(message.get("attachments") or []) for message in messages)
+
+    if not normalized:
+        raise ImportParseError("Kimi capture bundle was recognized, but no conversations could be parsed.")
+
+    return {
+        "provider": "kimi",
+        "parser_version": "kimi:v1",
+        "conversations": normalized,
+        "warnings": warnings,
+        "summary": {
+            "conversation_count": len(normalized),
+            "message_count": message_total,
+            "attachment_count": attachment_total,
+        },
+    }
 
 
 def parse_claude_export(export_path: Path) -> dict[str, Any]:
@@ -340,6 +442,336 @@ def load_named_json_from_zip(export_path: Path, target_name: str) -> Any:
 def load_json_file(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def looks_like_kimi_capture_bundle(document: Any) -> bool:
+    return (
+        isinstance(document, dict)
+        and str(document.get("provider") or "").strip().lower() == "kimi"
+        and isinstance(document.get("chats"), list)
+    )
+
+
+def build_kimi_history_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    history_groups = payload.get("history_groups")
+    if not isinstance(history_groups, list):
+        return index
+
+    for group in history_groups:
+        if not isinstance(group, dict):
+            continue
+        group_label = str(group.get("label") or "").strip()
+        items = group.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            chat_id = str(item.get("chat_id") or "").strip()
+            if not chat_id:
+                continue
+            indexed_item = dict(item)
+            if group_label and not indexed_item.get("group_label"):
+                indexed_item["group_label"] = group_label
+            index[chat_id] = indexed_item
+    return index
+
+
+def extract_kimi_capture_messages(chat_entry: dict[str, Any]) -> list[dict[str, Any]]:
+    direct_messages = chat_entry.get("messages")
+    if isinstance(direct_messages, list) and any(isinstance(item, dict) for item in direct_messages):
+        return [item for item in direct_messages if isinstance(item, dict)]
+
+    pages = chat_entry.get("message_pages") or chat_entry.get("messages_pages") or chat_entry.get("list_messages_pages")
+    if not isinstance(pages, list):
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for page in pages:
+        collect_kimi_message_candidates(page, candidates)
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(extract_first(candidate, ["message_id", "msg_id", "id", "uuid"]) or "").strip()
+        if not key:
+            key = stable_hash(dumps_json_safe(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def collect_kimi_message_candidates(value: Any, output: list[dict[str, Any]]) -> None:
+    if isinstance(value, dict):
+        if is_likely_kimi_message(value):
+            output.append(value)
+        for nested in value.values():
+            collect_kimi_message_candidates(nested, output)
+    elif isinstance(value, list):
+        for item in value:
+            collect_kimi_message_candidates(item, output)
+
+
+def is_likely_kimi_message(candidate: dict[str, Any]) -> bool:
+    keys = set(candidate.keys())
+    if not keys:
+        return False
+    if {"file_name", "url"}.issubset(keys) or {"src", "alt"}.issubset(keys):
+        return False
+    if "chat_id" in keys and len(keys) <= 3:
+        return False
+
+    has_role = bool(keys & {"role", "sender", "sender_type", "message_type", "is_bot", "is_user"})
+    has_text = bool(keys & {"text", "content", "contents", "parts", "segments", "answer", "query", "markdown", "display_content"})
+    has_id = bool(keys & {"message_id", "msg_id", "id", "uuid"})
+    has_time = bool(keys & {"created_at", "updated_at", "timestamp", "time"})
+    return (has_role and has_text) or (has_id and has_text) or (has_id and has_time and has_role)
+
+
+def normalize_kimi_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
+    text = flatten_kimi_message_text(raw_message)
+    attachments = extract_kimi_attachments(raw_message)
+    if not text and not attachments:
+        return None
+
+    role = normalize_kimi_role(raw_message)
+    author_name = "You" if role == "user" else "Kimi" if role == "assistant" else None
+    metadata: dict[str, Any] = {}
+    for key in ("updated_at", "status", "message_type", "sender", "sender_type"):
+        value = raw_message.get(key)
+        if value not in (None, ""):
+            metadata[key] = value
+
+    return {
+        "provider_message_id": extract_first(raw_message, ["message_id", "msg_id", "id", "uuid"]),
+        "role": role,
+        "author_name": author_name,
+        "model": extract_first(raw_message, ["model", "model_name"]),
+        "created_at": extract_timestamp(raw_message, ["created_at", "create_time", "timestamp", "time", "updated_at"]),
+        "text": text or format_attachment_lines(attachments),
+        "content": raw_message,
+        "metadata": metadata,
+        "attachments": attachments,
+    }
+
+
+def normalize_kimi_role(raw_message: dict[str, Any]) -> str:
+    if raw_message.get("is_user") is True:
+        return "user"
+    if raw_message.get("is_bot") is True:
+        return "assistant"
+    for key in ("role", "sender", "sender_type", "message_type"):
+        value = raw_message.get(key)
+        normalized = str(value or "").strip().lower()
+        if normalized in {"user", "human", "prompt", "questioner"}:
+            return "user"
+        if normalized in {"assistant", "bot", "kimi", "model", "answer"}:
+            return "assistant"
+        if normalized in {"system", "developer"}:
+            return "system"
+        if normalized in {"tool", "function"}:
+            return "tool"
+    return "unknown"
+
+
+def flatten_kimi_message_text(raw_message: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("text", "display_content", "markdown", "summary", "answer", "query"):
+        value = raw_message.get(key)
+        if value in (None, ""):
+            continue
+        rendered = flatten_kimi_value(value)
+        if rendered:
+            parts.append(rendered)
+
+    for key in ("content", "contents", "parts", "segments", "message", "body"):
+        value = raw_message.get(key)
+        if value in (None, ""):
+            continue
+        rendered = flatten_kimi_value(value)
+        if rendered:
+            parts.append(rendered)
+
+    unique_parts: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        if part not in seen:
+            seen.add(part)
+            unique_parts.append(part)
+    return "\n\n".join(unique_parts).strip()
+
+
+def flatten_kimi_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [flatten_kimi_value(item) for item in value]
+        return "\n\n".join(part for part in parts if part).strip()
+    if isinstance(value, dict):
+        value_type = str(value.get("type") or "").strip().lower()
+        if value_type in {"image", "file", "audio", "video"}:
+            label = str(value.get("filename") or value.get("name") or value.get("title") or "").strip()
+            return label
+
+        parts: list[str] = []
+        for key in ("text", "markdown", "content", "display_content", "summary", "answer", "query", "body", "value"):
+            nested = value.get(key)
+            if nested in (None, ""):
+                continue
+            rendered = flatten_kimi_value(nested)
+            if rendered:
+                parts.append(rendered)
+        for key in ("contents", "parts", "segments", "children"):
+            nested = value.get(key)
+            if nested in (None, ""):
+                continue
+            rendered = flatten_kimi_value(nested)
+            if rendered:
+                parts.append(rendered)
+
+        unique_parts: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            if part not in seen:
+                seen.add(part)
+                unique_parts.append(part)
+        return "\n\n".join(unique_parts).strip()
+    return ""
+
+
+def extract_kimi_attachments(raw_message: dict[str, Any]) -> list[dict[str, Any]]:
+    collected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    direct_attachments = raw_message.get("attachments")
+    if isinstance(direct_attachments, list):
+        for attachment in direct_attachments:
+            if not isinstance(attachment, dict):
+                continue
+            filename = str(attachment.get("filename") or attachment.get("file_name") or "attachment").strip() or "attachment"
+            source_url = extract_nested(attachment, ["metadata", "source_url"]) or attachment.get("source_url")
+            key = str(source_url or filename).strip()
+            if key in seen:
+                continue
+            seen.add(key)
+            metadata = attachment.get("metadata") if isinstance(attachment.get("metadata"), dict) else {}
+            collected.append(
+                {
+                    "filename": filename,
+                    "mime_type": attachment.get("mime_type"),
+                    "blob_path": attachment.get("blob_path"),
+                    "sha256": attachment.get("sha256"),
+                    "metadata": metadata,
+                }
+            )
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            url = extract_first(value, ["url", "src", "image_url", "download_url", "file_url", "thumbnail_url", "thumb_url"])
+            filename = extract_first(value, ["filename", "file_name", "name", "title"])
+            mime_type = extract_first(value, ["mime_type", "content_type"])
+            if isinstance(url, str) and url.strip():
+                source_url = url.strip()
+                attachment_key = source_url
+                if attachment_key not in seen:
+                    seen.add(attachment_key)
+                    guessed_name = str(filename or source_url.rsplit("/", 1)[-1].split("?", 1)[0] or "attachment").strip()
+                    collected.append(
+                        {
+                            "filename": guessed_name or "attachment",
+                            "mime_type": str(mime_type).strip() if mime_type not in (None, "") else None,
+                            "blob_path": None,
+                            "sha256": None,
+                            "metadata": {
+                                "source": "kimi_remote_attachment",
+                                "source_url": source_url,
+                            },
+                        }
+                    )
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    attachment_lists = []
+    for key in ("attachments", "files", "images"):
+        nested = raw_message.get(key)
+        if nested not in (None, ""):
+            attachment_lists.append(nested)
+    if not attachment_lists:
+        attachment_lists.append(raw_message)
+    for nested in attachment_lists:
+        visit(nested)
+    return collected
+
+
+def normalize_kimi_history_attachments(history: dict[str, Any]) -> list[dict[str, Any]]:
+    attachments = history.get("attachments")
+    if not isinstance(attachments, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        source_url = str(attachment.get("url") or "").strip()
+        filename = str(attachment.get("filename") or attachment.get("type") or "attachment").strip() or "attachment"
+        normalized.append(
+            {
+                "filename": filename,
+                "mime_type": None,
+                "blob_path": None,
+                "sha256": None,
+                "metadata": {
+                    "source": "kimi_history_attachment",
+                    "source_url": source_url or None,
+                },
+            }
+        )
+    return normalized
+
+
+def kimi_chat_title(chat_entry: dict[str, Any], history: dict[str, Any], index: int) -> str:
+    for candidate in (
+        history.get("title"),
+        chat_entry.get("title"),
+        extract_first(chat_entry, ["name", "subject"]),
+        extract_nested(chat_entry, ["chat", "title"]),
+        extract_nested(chat_entry, ["chat", "name"]),
+        extract_nested(chat_entry, ["get_chat", "title"]),
+        extract_nested(chat_entry, ["get_chat", "name"]),
+    ):
+        title = str(candidate or "").strip()
+        if title:
+            return title
+    return f"Kimi conversation {index}"
+
+
+def kimi_chat_timestamp(chat_entry: dict[str, Any], history: dict[str, Any], keys: list[str]) -> str | None:
+    raw_chat_payload = chat_entry.get("chat")
+    raw_get_chat_payload = chat_entry.get("get_chat")
+    chat_payload: dict[str, Any] = raw_chat_payload if isinstance(raw_chat_payload, dict) else {}
+    get_chat_payload: dict[str, Any] = raw_get_chat_payload if isinstance(raw_get_chat_payload, dict) else {}
+    for candidate in (
+        extract_first(chat_entry, keys),
+        extract_first(chat_payload, keys),
+        extract_first(get_chat_payload, keys),
+        extract_first(history, keys),
+    ):
+        timestamp = iso_timestamp(candidate)
+        if timestamp:
+            return timestamp
+    return None
+
+
+def dumps_json_safe(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True)
 
 
 def looks_like_chatgpt(document: Any) -> bool:

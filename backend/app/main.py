@@ -665,6 +665,7 @@ def providers(request: Request) -> dict:
             {"provider": "chatgpt", "parser_version": "chatgpt:v1"},
             {"provider": "gemini", "parser_version": "gemini:v1"},
             {"provider": "claude", "parser_version": "claude:v1"},
+            {"provider": "kimi", "parser_version": "kimi:v1"},
         ]
     }
 

@@ -3,7 +3,7 @@ import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams, useSearc
 import { marked } from 'marked'
 import {
   MessageSquareText, Upload, BarChart3, Settings, LogOut, ChevronLeft,
-  Search, Loader2, Paperclip, Eye, EyeOff,
+  Search, Loader2, Paperclip, Eye, EyeOff, ExternalLink,
   ArrowUpFromLine, ChevronRight,
 } from 'lucide-react'
 import { cn } from './cn'
@@ -53,12 +53,13 @@ function formatDateShort(value?: string | null): string {
 
 // ── Shared tiny components ──
 
-function Badge({ children, variant = 'default', className }: { children: React.ReactNode; variant?: 'default' | 'chatgpt' | 'claude' | 'gemini' | 'completed' | 'failed' | 'processing' | 'queued'; className?: string }) {
+function Badge({ children, variant = 'default', className }: { children: React.ReactNode; variant?: 'default' | 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'completed' | 'failed' | 'processing' | 'queued'; className?: string }) {
   const styles: Record<string, string> = {
     default: 'bg-zinc-100 text-zinc-600',
     chatgpt: 'bg-emerald-50 text-emerald-700',
     claude: 'bg-pink-50 text-pink-700',
     gemini: 'bg-blue-50 text-blue-700',
+    kimi: 'bg-violet-50 text-violet-700',
     completed: 'bg-emerald-50 text-emerald-600',
     failed: 'bg-red-50 text-red-600',
     processing: 'bg-amber-50 text-amber-600',
@@ -73,10 +74,11 @@ function Badge({ children, variant = 'default', className }: { children: React.R
 
 function ProviderBadge({ provider }: { provider: string }) {
   const p = provider.toLowerCase()
-  let variant: 'chatgpt' | 'claude' | 'gemini' | 'default' = 'default'
+  let variant: 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'default' = 'default'
   if (p.includes('chatgpt') || p.includes('openai')) variant = 'chatgpt'
   else if (p.includes('claude') || p.includes('anthropic')) variant = 'claude'
   else if (p.includes('gemini') || p.includes('google')) variant = 'gemini'
+  else if (p.includes('kimi') || p.includes('moonshot')) variant = 'kimi'
   return <Badge variant={variant}>{provider}</Badge>
 }
 
@@ -441,7 +443,7 @@ function ImportsPage() {
           <label className="flex flex-col items-center gap-2 cursor-pointer">
             <ArrowUpFromLine className="w-6 h-6 text-zinc-400" />
             <span className="text-sm font-medium">{selectedFile ? selectedFile.name : 'Drop file here or click to browse'}</span>
-            <span className="text-xs text-zinc-400">ChatGPT, Claude, and Gemini exports supported</span>
+            <span className="text-xs text-zinc-400">ChatGPT, Claude, Gemini, and Kimi capture bundles supported</span>
             <input type="file" accept=".zip,.json" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} className="text-xs text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-zinc-200 file:bg-white file:text-zinc-600 file:font-medium file:text-xs file:cursor-pointer" />
           </label>
           <div className="flex items-center gap-3 mt-3 justify-center">
@@ -537,7 +539,7 @@ function ConversationsPage() {
     setSearchParams(params, { replace: true })
   }
 
-  const knownProviders = ['chatgpt', 'claude', 'gemini'] as const
+  const knownProviders = ['chatgpt', 'claude', 'gemini', 'kimi'] as const
 
   return (
     <PageShell title="Conversations">
@@ -804,6 +806,7 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
   const [open, setOpen] = useState(false)
   const preview = getExtractedContent(attachment.metadata)
   const info = describeAttachment(attachment.metadata)
+  const sourceUrl = getAttachmentSourceUrl(attachment.metadata)
 
   return (
     <>
@@ -813,13 +816,20 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
           <span className="font-medium truncate">{attachment.filename}</span>
           {info && <span className="text-xs text-zinc-400 truncate">{info}</span>}
         </div>
-        {preview ? (
-          <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => setOpen((v) => !v)}>
-            {open ? <><EyeOff className="w-3 h-3" /> Hide</> : <><Eye className="w-3 h-3" /> View</>}
-          </Btn>
-        ) : (
-          <span className="text-xs text-zinc-400 shrink-0">No text</span>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {sourceUrl && (
+            <a href={sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-violet-700 hover:text-violet-900">
+              <ExternalLink className="w-3 h-3" /> Source
+            </a>
+          )}
+          {preview ? (
+            <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => setOpen((v) => !v)}>
+              {open ? <><EyeOff className="w-3 h-3" /> Hide</> : <><Eye className="w-3 h-3" /> View</>}
+            </Btn>
+          ) : (
+            <span className="text-xs text-zinc-400">No text</span>
+          )}
+        </div>
       </div>
       {open && preview && (
         <pre className="mb-1.5 p-3 rounded-md bg-zinc-100 border border-zinc-200 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed max-h-[300px] overflow-y-auto">{preview}</pre>
@@ -850,6 +860,12 @@ function getExtractedContent(metadata?: Record<string, unknown> | null) {
   if (!metadata) return null
   const extracted = metadata.extracted_content
   return typeof extracted === 'string' && extracted.trim() ? extracted.trim() : null
+}
+
+function getAttachmentSourceUrl(metadata?: Record<string, unknown> | null) {
+  if (!metadata) return null
+  const sourceUrl = metadata.source_url
+  return typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl : null
 }
 
 function formatBytes(bytes: number) {

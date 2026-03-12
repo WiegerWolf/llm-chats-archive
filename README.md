@@ -10,8 +10,7 @@ Self-hosted single-user archive for AI chat exports. It uses a React SPA, a Fast
 - normalized archive for conversations and messages
 - full-text search across imported chats
 - archive-style conversation viewer with provenance metadata
-- initial adapters for ChatGPT exports and generic Gemini-style JSON exports
-- initial adapters for ChatGPT, Claude, and generic Gemini-style JSON exports
+- initial adapters for ChatGPT, Claude, Gemini, and Kimi capture bundles
 
 ## Project layout
 
@@ -53,5 +52,18 @@ The app is served on `http://localhost:8080` by default. Persistent data is stor
 - ChatGPT exports containing `conversations.json`
 - Claude exports from Anthropic containing `users.json`, `projects.json`, and `conversations.json`
 - Gemini-style JSON exports where conversation/message structure can be inferred from JSON files
+- Kimi browser capture bundles created by `scripts/kimi-export.user.js`
 
 The importer preserves the original uploaded file, normalizes supported conversations/messages into SQLite, and keeps warnings for anything it cannot parse cleanly.
+
+## Kimi capture workflow
+
+Kimi does not currently expose a native export flow, so this project ships a browser-side collector.
+
+1. Install `scripts/kimi-export.user.js` in a userscript manager such as Tampermonkey or Violentmonkey.
+2. Open `https://www.kimi.com/chat/history` while logged in.
+3. Click the `Export Kimi` button added by the script.
+4. Wait for it to download a `kimi-export-...json` bundle.
+5. Upload that JSON file in the archive app Imports page.
+
+The userscript runs inside your authenticated browser session, captures chat metadata plus message API responses, and downloads a sanitized JSON bundle without storing your Kimi auth token inside the archive app.
