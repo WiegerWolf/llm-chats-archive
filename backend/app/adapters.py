@@ -465,6 +465,7 @@ def normalize_chatgpt_payload(
                     "attachments": attachments,
                 }
             )
+            messages.extend(extract_chatgpt_supplemental_messages(message))
 
         messages.sort(key=lambda item: item.get("created_at") or "")
         for sequence, message in enumerate(messages, start=1):
@@ -1310,6 +1311,123 @@ def render_chatgpt_content_part(part: Any) -> str:
     if "parts" in part:
         return flatten_text(part.get("parts"))
     return ""
+
+
+def extract_chatgpt_supplemental_messages(message: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    chatgpt_sdk = metadata.get("chatgpt_sdk") if isinstance(metadata.get("chatgpt_sdk"), dict) else {}
+    widget_state_raw = chatgpt_sdk.get("widget_state")
+    if not widget_state_raw:
+        return []
+
+    if isinstance(widget_state_raw, str):
+        widget_state = parse_json_bytes(widget_state_raw.encode("utf-8"))
+    else:
+        widget_state = widget_state_raw
+    if not isinstance(widget_state, dict):
+        return []
+
+    report_message = widget_state.get("report_message")
+    if not isinstance(report_message, dict):
+        return []
+
+    report_content = report_message.get("content") if isinstance(report_message.get("content"), dict) else {}
+    markdown = flatten_chatgpt_content(report_content).strip()
+    cleaned_markdown = strip_chatgpt_citation_markers(markdown)
+    if not cleaned_markdown:
+        return []
+
+    report_metadata = report_message.get("metadata") if isinstance(report_message.get("metadata"), dict) else {}
+    references = extract_chatgpt_report_references(report_metadata)
+    artifact_title = chatgpt_deep_research_title(cleaned_markdown)
+
+    synthetic_message = {
+        "provider_message_id": report_message.get("id") or f"{message.get('id')}:report",
+        "role": "assistant",
+        "author_name": "ChatGPT",
+        "model": report_metadata.get("resolved_model_slug") or metadata.get("resolved_model_slug") or metadata.get("model_slug"),
+        "created_at": iso_timestamp(report_message.get("create_time")) or iso_timestamp(message.get("create_time")),
+        "text": "",
+        "content": report_content,
+        "metadata": {
+            "source": "chatgpt_deep_research_report",
+            "refs": {
+                "search_chunks": references,
+            },
+            "artifacts": [
+                {
+                    "artifact_id": report_message.get("id") or f"{message.get('id')}:report-artifact",
+                    "type": "ARTIFACT_TYPE_MARKDOWN",
+                    "title": artifact_title,
+                    "content": cleaned_markdown,
+                }
+            ],
+            "research_summary": chatgpt_deep_research_summary(widget_state, references),
+        },
+        "attachments": [],
+    }
+    return [synthetic_message]
+
+
+def extract_chatgpt_report_references(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    content_references = metadata.get("content_references")
+    if not isinstance(content_references, list):
+        return []
+
+    references: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for reference in content_references:
+        if not isinstance(reference, dict):
+            continue
+        items = reference.get("items") if isinstance(reference.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            candidates = [item, *(site for site in item.get("supporting_websites") or [] if isinstance(site, dict))]
+            for candidate in candidates:
+                url = str(candidate.get("url") or "").strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                references.append(
+                    {
+                        "url": url,
+                        "title": candidate.get("title") or url,
+                        "snippet": candidate.get("snippet"),
+                        "site_name": candidate.get("attribution"),
+                        "publish_time": candidate.get("pub_date"),
+                    }
+                )
+    return references
+
+
+def strip_chatgpt_citation_markers(text: str) -> str:
+    cleaned = re.sub(r"\ue200cite\ue202.*?\ue201", "", text)
+    cleaned = re.sub(r"\ue200entity\ue202.*?\ue201", "", cleaned)
+    cleaned = re.sub(r"\ue200image_group\ue202.*?\ue201", "", cleaned)
+    cleaned = cleaned.replace("\uE200", "").replace("\uE201", "").replace("\uE202", "")
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def chatgpt_deep_research_title(markdown: str) -> str:
+    first_line = markdown.splitlines()[0].strip() if markdown.splitlines() else ""
+    if first_line.startswith("#"):
+        return first_line.lstrip("#").strip() or "Research report"
+    return first_line or "Research report"
+
+
+def chatgpt_deep_research_summary(widget_state: dict[str, Any], references: list[dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "status": widget_state.get("status"),
+        "citation_count": len(references),
+    }
+    started = parse_iso_datetime(widget_state.get("research_started_at"))
+    stopped = parse_iso_datetime(widget_state.get("research_stopped_at"))
+    if started is not None and stopped is not None:
+        duration_seconds = max(int((stopped - started).total_seconds()), 0)
+        summary["duration_seconds"] = duration_seconds
+    return summary
 
 
 def load_claude_conversations(export_path: Path) -> Any:

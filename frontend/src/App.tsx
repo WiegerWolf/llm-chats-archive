@@ -650,6 +650,7 @@ function ConversationDetailPage() {
   if (!conversation) return <PageShell title="Conversation"><p className="text-zinc-400 text-[0.8125rem]">Loading...</p></PageShell>
 
   const backTo = highlightQuery ? `/?q=${encodeURIComponent(highlightQuery)}` : '/'
+  const visibleMessages = conversation.messages.filter((msg) => shouldDisplayMessage(msg))
 
   return (
     <div className="max-w-[1100px] mx-auto px-6 py-6 pb-12">
@@ -677,7 +678,7 @@ function ConversationDetailPage() {
       </div>
 
       <div className="border border-zinc-200 rounded-lg overflow-hidden">
-        {conversation.messages.map((msg) => (
+        {visibleMessages.map((msg) => (
           <MessageBlock key={msg.id} msg={msg} highlightQuery={highlightQuery} />
         ))}
       </div>
@@ -686,11 +687,12 @@ function ConversationDetailPage() {
 }
 
 function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messages'][0]; highlightQuery: string }) {
-  const visibleText = getVisibleMessageText(msg)
-  const html = renderMarkdown(visibleText)
-  const highlighted = highlightQuery ? highlightHtml(html, highlightQuery) : html
+  const presentation = getMessagePresentation(msg)
+  const html = presentation.kind === 'markdown' ? renderMarkdown(presentation.text) : ''
+  const highlighted = highlightQuery && html ? highlightHtml(html, highlightQuery) : html
   const research = getKimiResearchData(msg.metadata)
   const thinking = getClaudeThinkingData(msg)
+  const showBody = presentation.kind === 'code' || presentation.text.trim().length > 0
 
   return (
     <div className={cn('px-5 py-4 border-b border-zinc-100 last:border-b-0', msg.role === 'assistant' && 'bg-zinc-50/70')}>
@@ -701,7 +703,20 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
           #{msg.sequence}{msg.created_at ? ` · ${timeAgo(msg.created_at)}` : ''}{msg.model ? ` · ${msg.model}` : ''}
         </span>
       </div>
-      <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      {showBody && (presentation.kind === 'markdown' ? (
+        <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      ) : (
+        <div className="space-y-2">
+          {presentation.title && <p className="text-2xs font-semibold uppercase tracking-wider text-zinc-400">{presentation.title}</p>}
+          <pre className="overflow-x-auto rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs leading-relaxed text-zinc-700"><code>{presentation.text}</code></pre>
+          {presentation.raw && presentation.raw !== presentation.text && (
+            <details className="rounded-md border border-zinc-200 bg-white">
+              <summary className="cursor-pointer list-none px-3 py-2 text-[0.8125rem] font-medium text-zinc-700">Raw payload</summary>
+              <pre className="overflow-x-auto border-t border-zinc-200 px-3 py-2 text-xs leading-relaxed text-zinc-600"><code>{presentation.raw}</code></pre>
+            </details>
+          )}
+        </div>
+      ))}
       {thinking.length > 0 && <ThinkingBlock thoughts={thinking} highlightQuery={highlightQuery} />}
       {research && <KimiResearchBlock data={research} highlightQuery={highlightQuery} />}
       {msg.attachments.length > 0 && (
@@ -1199,7 +1214,38 @@ type ClaudeThinkingEntry = {
   summaries: string[]
 }
 
+type MessagePresentation =
+  | { kind: 'markdown'; text: string }
+  | { kind: 'code'; text: string; title?: string; raw?: string }
+
+function shouldDisplayMessage(msg: ConversationDetail['messages'][0]): boolean {
+  const metadata = asRecord(msg.metadata)
+  const research = getKimiResearchData(msg.metadata)
+  if (metadata?.is_visually_hidden_from_conversation === true && !research) return false
+
+  const content = asRecord(msg.content)
+  const contentType = asString(content?.content_type).toLowerCase()
+  if (contentType === 'reasoning_recap') return false
+  if (contentType === 'thoughts' && asArray(content?.thoughts).length === 0) return false
+  if (isChatGptBootstrapMessage(msg)) return false
+
+  const visibleText = getVisibleMessageText(msg).trim()
+  if (!visibleText && msg.attachments.length === 0 && !research) return false
+  if (msg.role === 'unknown' && safeJsonLikeEmpty(visibleText) && msg.attachments.length === 0) return false
+  return true
+}
+
+function getMessagePresentation(msg: ConversationDetail['messages'][0]): MessagePresentation {
+  const payload = getChatGptSpecialPayload(msg)
+  if (payload) return payload
+  return { kind: 'markdown', text: getVisibleMessageText(msg) }
+}
+
 function getVisibleMessageText(msg: ConversationDetail['messages'][0]): string {
+  const content = asRecord(msg.content)
+  const contentType = asString(content?.content_type).toLowerCase()
+  if (contentType === 'reasoning_recap') return flattenTextContent(content?.content) || msg.text
+
   const blocks = asArray(asRecord(msg.content)?.blocks)
   const visibleParts = blocks
     .map((item) => asRecord(item))
@@ -1208,7 +1254,86 @@ function getVisibleMessageText(msg: ConversationDetail['messages'][0]): string {
     .filter(Boolean)
 
   if (visibleParts.length > 0) return visibleParts.join('\n\n').trim()
+
+  if (contentType === 'thoughts') {
+    const thoughts = asArray(content?.thoughts)
+      .map((item) => flattenTextContent(item))
+      .filter(Boolean)
+    if (thoughts.length > 0) return thoughts.join('\n\n').trim()
+    return ''
+  }
+
   return msg.text
+}
+
+function getChatGptSpecialPayload(msg: ConversationDetail['messages'][0]): MessagePresentation | null {
+  const content = asRecord(msg.content)
+  const contentType = asString(content?.content_type).toLowerCase()
+  if (contentType !== 'code') return null
+
+  const raw = asString(content?.text) || msg.text
+  if (!raw) return null
+  const parsed = safeParseJson(raw)
+  if (!parsed) return {
+    kind: 'code',
+    text: raw,
+    title: asString(content?.language) ? `${asString(content?.language)} payload` : 'Code payload',
+  }
+
+  const record = asRecord(parsed)
+  const artifactContent = asString(record?.content)
+  const artifactType = asString(record?.type)
+  const artifactName = asString(record?.name)
+  if (artifactContent) {
+    return {
+      kind: 'code',
+      text: artifactContent,
+      title: [artifactName || 'Generated artifact', artifactType].filter(Boolean).join(' · '),
+      raw,
+    }
+  }
+
+  const calculator = asArray(record?.calculator)
+  if (calculator.length > 0) {
+    const expressions = calculator
+      .map((item) => asRecord(item))
+      .filter(isPresent)
+      .map((item) => asString(item.expression))
+      .filter(Boolean)
+    if (expressions.length > 0) {
+      return {
+        kind: 'code',
+        text: expressions.join('\n'),
+        title: 'Calculator payload',
+        raw,
+      }
+    }
+  }
+
+  return {
+    kind: 'code',
+    text: safeJson(parsed),
+    title: 'Structured payload',
+    raw,
+  }
+}
+
+function isChatGptBootstrapMessage(msg: ConversationDetail['messages'][0]): boolean {
+  const metadata = asRecord(msg.metadata)
+  const sdk = asRecord(metadata?.chatgpt_sdk)
+  const invokedResource = asRecord(metadata?.invoked_resource)
+  const resourceName = asString(sdk?.resource_name)
+  const resourceUri = asString(invokedResource?.resource_uri)
+  const rawText = msg.text.trim()
+  const parsed = rawText ? safeParseJson(rawText) : null
+  const parsedRecord = asRecord(parsed)
+  const payloadPath = asString(parsedRecord?.path)
+
+  if (payloadPath.toLowerCase().includes('deep research')) return true
+  if ((resourceName.toLowerCase().includes('deep research') || resourceUri.toLowerCase().includes('deep_research')) && msg.role === 'tool') return true
+  if ((resourceName.toLowerCase().includes('deep research') || resourceUri.toLowerCase().includes('deep_research')) && msg.role === 'assistant' && rawText.startsWith('{')) return true
+  if (rawText.includes('Embedded UI description') && rawText.includes('deep research')) return true
+  return false
 }
 
 function getClaudeThinkingData(msg: ConversationDetail['messages'][0]): ClaudeThinkingEntry[] {
@@ -1340,6 +1465,18 @@ function safeJson(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function safeParseJson(value: string): unknown | null {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
+function safeJsonLikeEmpty(value: string) {
+  return value === '{}' || value === '[]'
 }
 
 export default App
