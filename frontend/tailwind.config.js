@@ -10,15 +10,24 @@ export default {
       fontSize: {
         '2xs': ['0.625rem', '0.875rem'],
       },
-      colors: {
-        sidebar: {
-          DEFAULT: '#09090b',
-          foreground: '#fafafa',
-          muted: '#a1a1aa',
-          accent: '#27272a',
-          border: '#27272a',
-          ring: '#3f3f46',
+      keyframes: {
+        'slide-in-right': {
+          from: { transform: 'translateX(100%)' },
+          to: { transform: 'translateX(0)' },
         },
+        'fade-in': {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
+        },
+        'fade-in-up': {
+          from: { opacity: '0', transform: 'translateY(4px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
+      },
+      animation: {
+        'slide-in-right': 'slide-in-right 0.18s ease-out',
+        'fade-in': 'fade-in 0.15s ease-out',
+        'fade-in-up': 'fade-in-up 0.2s ease-out',
       },
     },
   },

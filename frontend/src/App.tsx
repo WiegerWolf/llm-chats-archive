@@ -1,13 +1,13 @@
 import { FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { BrowserRouter, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { marked } from 'marked'
 import {
-  MessageSquareText, Upload, BarChart3, Settings, LogOut, ChevronLeft,
-  Search, Loader2, Paperclip, Eye, EyeOff, ExternalLink,
-  ArrowUpFromLine, ChevronRight, Trash2, Globe, FileText, Sparkles, Wrench,
+  MessageSquareText, Upload, Settings, LogOut, Search, Loader2,
+  Paperclip, Eye, EyeOff, ExternalLink, ArrowUpFromLine,
+  ChevronLeft, Trash2, Globe, FileText, Sparkles, Wrench, X,
 } from 'lucide-react'
 import { cn } from './cn'
-import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type DashboardData, type ImportRecord, type ImportSource, type SessionState } from './api'
+import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type ImportRecord, type ImportSource, type SessionState } from './api'
 
 // ── Marked config ──
 
@@ -340,6 +340,13 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge variant={s}>{status}</Badge>
 }
 
+const RoleBorderStyles: Record<string, string> = {
+  user: 'border-l-blue-400',
+  assistant: 'border-l-emerald-400',
+  system: 'border-l-zinc-300',
+  tool: 'border-l-amber-400',
+}
+
 const RoleStyles: Record<string, string> = {
   user: 'bg-blue-50 text-blue-700',
   assistant: 'bg-emerald-50 text-emerald-700',
@@ -372,6 +379,31 @@ function Btn({ children, variant = 'primary', className, ...props }: React.Butto
   )
 }
 
+function FieldLabel({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-1.5 text-[0.8125rem] font-medium text-zinc-600">
+      {label}
+      {children}
+    </label>
+  )
+}
+
+// ── Hooks ──
+
+const PAGE_SIZE = 50
+const DEBOUNCE_MS = 300
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => { const id = setTimeout(() => setDebounced(value), delay); return () => clearTimeout(id) }, [value, delay])
+  return debounced
+}
+
+function isInputFocused() {
+  const el = document.activeElement
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
+}
+
 // ── App root ──
 
 function App() {
@@ -395,7 +427,7 @@ function App() {
 
   return (
     <BrowserRouter>
-      <Shell onLogout={refreshSession} />
+      <AppShell onLogout={refreshSession} />
     </BrowserRouter>
   )
 }
@@ -403,8 +435,13 @@ function App() {
 function AuthScreen({ kicker, title, message, children }: { kicker: string; title: string; message?: string; children?: React.ReactNode }) {
   return (
     <div className="min-h-screen grid place-items-center p-8 bg-zinc-50">
-      <div className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-lg shadow-sm">
-        <p className="text-2xs font-medium text-zinc-400 uppercase tracking-wider">{kicker}</p>
+      <div className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-xl shadow-sm animate-fade-in-up">
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-600 text-white shrink-0">
+            <MessageSquareText className="w-4 h-4" />
+          </div>
+          <p className="text-[0.8125rem] font-semibold text-zinc-400">{kicker}</p>
+        </div>
         <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
         {message && <p className="text-[0.8125rem] text-zinc-500">{message}</p>}
         {children}
@@ -430,8 +467,13 @@ function SetupPage({ onComplete }: { onComplete: () => Promise<void> }) {
 
   return (
     <div className="min-h-screen grid place-items-center p-8 bg-zinc-50">
-      <form className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-lg shadow-sm" onSubmit={onSubmit}>
-        <p className="text-2xs font-medium text-zinc-400 uppercase tracking-wider">First-run setup</p>
+      <form className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-xl shadow-sm animate-fade-in-up" onSubmit={onSubmit}>
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-600 text-white shrink-0">
+            <MessageSquareText className="w-4 h-4" />
+          </div>
+          <p className="text-[0.8125rem] font-semibold text-zinc-400">First-run setup</p>
+        </div>
         <h1 className="text-xl font-semibold tracking-tight">Create password</h1>
         <p className="text-[0.8125rem] text-zinc-500">Single-user, LAN-only. Minimum 12 characters.</p>
         <FieldLabel label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required className="input" /></FieldLabel>
@@ -457,8 +499,13 @@ function LoginPage({ onLogin }: { onLogin: () => Promise<void> }) {
 
   return (
     <div className="min-h-screen grid place-items-center p-8 bg-zinc-50">
-      <form className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-lg shadow-sm" onSubmit={onSubmit}>
-        <p className="text-2xs font-medium text-zinc-400 uppercase tracking-wider">Chat Archive</p>
+      <form className="w-full max-w-[380px] grid gap-4 p-6 bg-white border border-zinc-200 rounded-xl shadow-sm animate-fade-in-up" onSubmit={onSubmit}>
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-600 text-white shrink-0">
+            <MessageSquareText className="w-4 h-4" />
+          </div>
+          <p className="text-[0.8125rem] font-semibold text-zinc-400">Chat Archive</p>
+        </div>
         <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
         <FieldLabel label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus className="input" /></FieldLabel>
         {error && <p className="text-[0.8125rem] text-red-600">{error}</p>}
@@ -468,339 +515,93 @@ function LoginPage({ onLogin }: { onLogin: () => Promise<void> }) {
   )
 }
 
-function FieldLabel({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="grid gap-1.5 text-[0.8125rem] font-medium text-zinc-600">
-      {label}
-      {children}
-    </label>
-  )
-}
+// ── App shell: top bar + split pane ──
 
-// ── Shell & sidebar ──
-
-const NAV_ITEMS: Array<{ to: string; icon: typeof MessageSquareText; label: string; end?: boolean }> = [
-  { to: '/', icon: MessageSquareText, label: 'Conversations', end: true },
-  { to: '/imports', icon: Upload, label: 'Imports' },
-  { to: '/stats', icon: BarChart3, label: 'Stats' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
-]
-
-function Shell({ onLogout }: { onLogout: () => Promise<void> }) {
+function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
   const navigate = useNavigate()
-  const [collapsed, setCollapsed] = useState(false)
-
-  const logout = async () => { await api.logout(); await onLogout(); navigate('/') }
-
-  return (
-    <div className={cn('grid min-h-screen transition-[grid-template-columns] duration-200', collapsed ? 'grid-cols-[56px_1fr]' : 'grid-cols-[220px_1fr]')}>
-      <aside className="flex flex-col bg-sidebar text-sidebar-muted sticky top-0 h-screen overflow-hidden">
-        {/* Brand */}
-        <div className={cn('flex items-center gap-2.5 border-b border-sidebar-border px-3 min-h-[56px]', collapsed && 'justify-center')}>
-          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-600 text-white shrink-0">
-            <MessageSquareText className="w-4 h-4" />
-          </div>
-          {!collapsed && (
-            <div className="overflow-hidden">
-              <p className="text-[0.8125rem] font-semibold text-sidebar-foreground leading-tight truncate">Chat Archive</p>
-              <p className="text-2xs text-sidebar-muted leading-tight truncate">LLM export viewer</p>
-            </div>
-          )}
-        </div>
-
-        {/* Nav */}
-        <nav className="flex-1 flex flex-col gap-0.5 p-2 overflow-y-auto">
-          {NAV_ITEMS.map(({ to, icon: Icon, label, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) => cn(
-                'group flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[0.8125rem] font-medium transition-colors',
-                collapsed && 'justify-center px-0',
-                isActive
-                  ? 'bg-sidebar-ring text-sidebar-foreground'
-                  : 'text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground',
-              )}
-            >
-              <Icon className="w-4 h-4 shrink-0 opacity-60 group-hover:opacity-90" />
-              {!collapsed && <span className="truncate">{label}</span>}
-            </NavLink>
-          ))}
-        </nav>
-
-        {/* Footer */}
-        <div className="border-t border-sidebar-border p-2 flex flex-col gap-1">
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className={cn('flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[0.8125rem] font-medium text-sidebar-muted hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors w-full', collapsed && 'justify-center px-0')}
-          >
-            <LogOut className="w-4 h-4 shrink-0 opacity-60" />
-            {!collapsed && <span>Log out</span>}
-          </button>
-          <button
-            type="button"
-            onClick={() => setCollapsed((c) => !c)}
-            className={cn('flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-2xs text-sidebar-muted/60 hover:bg-sidebar-accent hover:text-sidebar-muted transition-colors w-full', collapsed && 'justify-center px-0')}
-          >
-            {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <><ChevronLeft className="w-3.5 h-3.5" /> Collapse</>}
-          </button>
-        </div>
-      </aside>
-
-      <main className="min-h-screen overflow-y-auto bg-white">
-        <Routes>
-          <Route path="/" element={<ConversationsPage />} />
-          <Route path="/conversations/:conversationId" element={<ConversationDetailPage />} />
-          <Route path="/imports" element={<ImportsPage />} />
-          <Route path="/stats" element={<StatsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
-      </main>
-    </div>
-  )
-}
-
-// ── Stats (formerly Dashboard) ──
-
-function StatsPage() {
-  const navigate = useNavigate()
-  const [data, setData] = useState<DashboardData | null>(null)
-  const [error, setError] = useState('')
-
-  useEffect(() => { api.getDashboard().then(setData).catch((err: Error) => setError(err.message)) }, [])
-
-  if (error) return <PageShell title="Stats"><p className="text-red-600 text-[0.8125rem]">{error}</p></PageShell>
-  if (!data) return <PageShell title="Stats"><p className="text-zinc-400 text-[0.8125rem]">Loading...</p></PageShell>
-
-  const isEmpty = data.conversation_count === 0 && data.import_count === 0
-
-  if (isEmpty) {
-    return (
-      <PageShell title="Stats">
-        <div className="flex flex-col items-center gap-3 py-16 border-2 border-dashed border-zinc-200 rounded-lg text-center">
-          <Upload className="w-8 h-8 text-zinc-300" />
-          <h3 className="text-base font-semibold">No data yet</h3>
-          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT export (single-file or sharded), Claude, Gemini, Google AI Studio, Kimi bundle, or Pi history JSON to start browsing your conversations.</p>
-          <Btn onClick={() => navigate('/imports')}>Go to Imports</Btn>
-        </div>
-      </PageShell>
-    )
-  }
-
-  return (
-    <PageShell title="Stats" desc="Archive overview across all providers">
-      <div className="grid grid-cols-3 gap-3 mb-6">
-        {[
-          { label: 'Conversations', value: data.conversation_count },
-          { label: 'Messages', value: data.message_count },
-          { label: 'Imports', value: data.import_count },
-        ].map(({ label, value }) => (
-          <div key={label} className="border border-zinc-200 rounded-lg p-3.5">
-            <div className="text-2xl font-semibold tabular-nums tracking-tight">{value.toLocaleString()}</div>
-            <div className="text-xs text-zinc-500 mt-0.5">{label}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 mb-3">
-        <Panel title="Providers">
-          {data.providers.length ? (
-            <ul>
-              {data.providers.map((p) => (
-                <li
-                  key={p.provider}
-                  className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-100 last:border-b-0 cursor-pointer hover:bg-zinc-50 transition-colors"
-                  onClick={() => navigate(`/?provider=${encodeURIComponent(p.provider)}`)}
-                >
-                  <span className="flex items-center gap-2"><ProviderBadge provider={p.provider} /> {p.provider}</span>
-                  <span className="text-xs font-semibold tabular-nums text-zinc-500">{p.count.toLocaleString()} <ChevronRight className="w-3 h-3 inline text-zinc-300" /></span>
-                </li>
-              ))}
-            </ul>
-          ) : <EmptyState>No conversations yet</EmptyState>}
-        </Panel>
-
-        <Panel title="Recent imports">
-          {data.recent_imports.length
-            ? <ImportList items={data.recent_imports} compact />
-            : <EmptyState>No imports yet</EmptyState>
-          }
-        </Panel>
-      </div>
-
-      <Panel title="Recent conversations">
-        {data.recent_conversations.length
-          ? <ConversationList items={data.recent_conversations} />
-          : <EmptyState>Import a provider export to get started</EmptyState>
-        }
-      </Panel>
-    </PageShell>
-  )
-}
-
-// ── Imports (with polling) ──
-
-function ImportsPage() {
-  const [imports, setImports] = useState<ImportRecord[]>([])
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [deletingId, setDeletingId] = useState<number | null>(null)
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [dragOver, setDragOver] = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const loadImports = useCallback(async () => {
-    try { const items = await api.listImports(); setImports(items); setError(''); return items }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not load imports.'); return [] }
-  }, [])
-
-  const stopPolling = useCallback(() => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }, [])
-
-  const startPolling = useCallback(() => {
-    stopPolling()
-    pollRef.current = setInterval(async () => {
-      const items = await loadImports()
-      if (!items.some((i) => i.status === 'processing' || i.status === 'queued')) stopPolling()
-    }, 2000)
-  }, [loadImports, stopPolling])
-
-  useEffect(() => { void loadImports(); return stopPolling }, [loadImports, stopPolling])
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!selectedFile) return
-    setBusy(true); setError('')
-    try {
-      await api.uploadImport(selectedFile)
-      setSelectedFile(null)
-      const fi = document.querySelector('.upload-drop input[type="file"]') as HTMLInputElement | null
-      if (fi) fi.value = ''
-      await loadImports(); startPolling()
-    } catch (err) { setError(err instanceof Error ? err.message : 'Upload failed.') }
-    finally { setBusy(false) }
-  }
-
-  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) setSelectedFile(f) }
-  const hasPending = imports.some((i) => i.status === 'processing' || i.status === 'queued')
-  const onDelete = async (item: ImportRecord) => {
-    if (item.status === 'processing' || item.status === 'queued') return
-    const confirmed = window.confirm(`Delete ${item.original_filename} and all messages, attachments, and stored files imported from it?`)
-    if (!confirmed) return
-    setDeletingId(item.id)
-    setError('')
-    try {
-      await api.deleteImport(item.id)
-      await loadImports()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete import.')
-    } finally {
-      setDeletingId(null)
-    }
-  }
-
-  return (
-    <PageShell title="Imports" desc="Upload provider exports (.zip or .json)">
-      <form onSubmit={onSubmit}>
-        <div
-          className={cn('upload-drop border-2 border-dashed rounded-lg p-8 text-center mb-4 transition-colors', dragOver ? 'border-indigo-400 bg-indigo-50' : 'border-zinc-300 hover:border-zinc-400')}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
-        >
-          <label className="flex flex-col items-center gap-2 cursor-pointer">
-            <ArrowUpFromLine className="w-6 h-6 text-zinc-400" />
-            <span className="text-sm font-medium">{selectedFile ? selectedFile.name : 'Drop file here or click to browse'}</span>
-            <span className="text-xs text-zinc-400">ChatGPT single-file and sharded exports, Claude, Gemini, Google AI Studio, Kimi bundles, and Pi history JSON supported</span>
-            <input type="file" accept=".zip,.json" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} className="text-xs text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-zinc-200 file:bg-white file:text-zinc-600 file:font-medium file:text-xs file:cursor-pointer" />
-          </label>
-          <div className="flex items-center gap-3 mt-3 justify-center">
-            <Btn type="submit" disabled={busy || !selectedFile}>
-              {busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Uploading...</> : 'Upload'}
-            </Btn>
-          </div>
-        </div>
-        {error && <p className="text-red-600 text-[0.8125rem] mb-4">{error}</p>}
-      </form>
-
-      <Panel
-        title="History"
-        action={
-          <div className="flex items-center gap-2">
-            {hasPending && <Badge variant="processing">Processing</Badge>}
-            <Btn variant="ghost" onClick={() => void loadImports()}>Refresh</Btn>
-          </div>
-        }
-      >
-        <ImportList items={imports} deletingId={deletingId} onDelete={onDelete} />
-      </Panel>
-    </PageShell>
-  )
-}
-
-// ── Conversations (debounced search + provider chips with counts) ──
-
-const PAGE_SIZE = 50
-const DEBOUNCE_MS = 300
-
-function useDebounce<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => { const id = setTimeout(() => setDebounced(value), delay); return () => clearTimeout(id) }, [value, delay])
-  return debounced
-}
-
-function ConversationsPage() {
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [provider, setProvider] = useState(searchParams.get('provider') || '')
+
+  // Parse selected conversation from URL
+  const convMatch = location.pathname.match(/^\/conversations\/(\d+)/)
+  const selectedConversationId = convMatch?.[1] || null
+
+  // Search & filter state
   const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [provider, setProvider] = useState(searchParams.get('provider') || '')
+  const debouncedQuery = useDebounce(query, DEBOUNCE_MS)
+  const isSearch = debouncedQuery.trim().length > 0
+
+  // Conversation list state
   const [items, setItems] = useState<Array<ConversationListItem & { snippet?: string }>>([])
-  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(false)
-  const [providerCounts, setProviderCounts] = useState<Record<string, number>>({})
-  const debouncedQuery = useDebounce(query, DEBOUNCE_MS)
-  const isSearch = debouncedQuery.trim().length > 0
-  const initialLoadDone = useRef(false)
+  const [listError, setListError] = useState('')
 
-  useEffect(() => {
+  // Dashboard stats
+  const [providerCounts, setProviderCounts] = useState<Record<string, number>>({})
+  const [totalStats, setTotalStats] = useState({ conversations: 0, messages: 0 })
+
+  // Overlay state
+  const [importDrawerOpen, setImportDrawerOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // Search ref
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  // Load dashboard
+  const refreshDashboard = useCallback(() => {
     api.getDashboard().then((d) => {
       const counts: Record<string, number> = {}
       for (const p of d.providers) counts[p.provider.toLowerCase()] = p.count
       setProviderCounts(counts)
+      setTotalStats({ conversations: d.conversation_count, messages: d.message_count })
     }).catch(() => {})
   }, [])
 
+  useEffect(() => { refreshDashboard() }, [refreshDashboard])
+
+  // Load conversations
   const load = useCallback(async (prov: string, q: string) => {
     setBusy(true)
     try {
-      if (q.trim()) { const r = await api.searchConversations(q.trim(), prov || undefined, PAGE_SIZE); setItems(r); setHasMore(false) }
-      else { const r = await api.listConversations(prov || undefined, PAGE_SIZE, 0); setItems(r); setHasMore(r.length >= PAGE_SIZE) }
-      setError('')
-    } catch (err) { setError(err instanceof Error ? err.message : 'Could not load conversations.') }
-    finally { setBusy(false) }
+      if (q.trim()) {
+        const r = await api.searchConversations(q.trim(), prov || undefined, PAGE_SIZE)
+        setItems(r)
+        setHasMore(false)
+      } else {
+        const r = await api.listConversations(prov || undefined, PAGE_SIZE, 0)
+        setItems(r)
+        setHasMore(r.length >= PAGE_SIZE)
+      }
+      setListError('')
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : 'Failed to load.')
+    } finally {
+      setBusy(false)
+    }
   }, [])
 
+  const initialLoadDone = useRef(false)
   useEffect(() => { if (!initialLoadDone.current) return; void load(provider, debouncedQuery) }, [debouncedQuery, provider, load])
   useEffect(() => { void load(provider, debouncedQuery).then(() => { initialLoadDone.current = true }) }, [])
 
   const loadMore = async () => {
     if (isSearch || loadingMore) return
     setLoadingMore(true)
-    try { const r = await api.listConversations(provider || undefined, PAGE_SIZE, items.length); setItems((prev) => [...prev, ...r]); setHasMore(r.length >= PAGE_SIZE) }
-    catch (err) { setError(err instanceof Error ? err.message : 'Could not load more.') }
-    finally { setLoadingMore(false) }
+    try {
+      const r = await api.listConversations(provider || undefined, PAGE_SIZE, items.length)
+      setItems((prev) => [...prev, ...r])
+      setHasMore(r.length >= PAGE_SIZE)
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : 'Failed to load more.')
+    } finally {
+      setLoadingMore(false)
+    }
   }
 
-  const toggleProvider = (p: string) => {
-    const next = provider === p ? '' : p
-    setProvider(next)
-    const params = new URLSearchParams(searchParams)
-    if (next) params.set('provider', next); else params.delete('provider')
-    setSearchParams(params, { replace: true })
-  }
-
+  // URL sync
   const handleQueryChange = (value: string) => {
     setQuery(value)
     const params = new URLSearchParams(searchParams)
@@ -808,6 +609,49 @@ function ConversationsPage() {
     setSearchParams(params, { replace: true })
   }
 
+  const handleProviderChange = (p: string) => {
+    const next = provider === p ? '' : p
+    setProvider(next)
+    const params = new URLSearchParams(searchParams)
+    if (next) params.set('provider', next); else params.delete('provider')
+    setSearchParams(params, { replace: true })
+  }
+
+  const selectConversation = (id: number) => {
+    const params = new URLSearchParams(searchParams)
+    navigate(`/conversations/${id}${params.toString() ? '?' + params.toString() : ''}`)
+  }
+
+  const clearSelection = () => {
+    const params = new URLSearchParams(searchParams)
+    navigate(`/${params.toString() ? '?' + params.toString() : ''}`)
+  }
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === '/' && !isInputFocused()) {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+      if (e.key === 'Escape') {
+        if (importDrawerOpen) setImportDrawerOpen(false)
+        else if (settingsOpen) setSettingsOpen(false)
+        else if (document.activeElement === searchRef.current) searchRef.current?.blur()
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [importDrawerOpen, settingsOpen])
+
+  const handleImportComplete = () => {
+    void load(provider, debouncedQuery)
+    refreshDashboard()
+  }
+
+  const logout = async () => { await api.logout(); await onLogout(); navigate('/') }
+
+  // Provider list
   const knownProviders = ['chatgpt', 'claude', 'gemini', 'googleaistudio', 'kimi', 'pi'] as const
   const providerOptions = [
     ...knownProviders.filter((item) => providerCounts[item] != null),
@@ -816,142 +660,303 @@ function ConversationsPage() {
       .sort((a, b) => a.localeCompare(b)),
   ]
 
+  const highlightQuery = searchParams.get('q') || ''
+
   return (
-    <PageShell title="Conversations">
-      {/* Search bar */}
-      <div className="relative mb-3">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
-        <input
-          value={query}
-          onChange={(e) => handleQueryChange(e.target.value)}
-          placeholder="Search messages..."
-          className="input pl-9 pr-10"
-        />
-        {busy && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 animate-spin" />}
-      </div>
-
-      {/* Provider chips */}
-      <div className="flex items-center gap-1.5 mb-3">
-        {providerOptions.map((p) => (
-          <button
-            key={p}
-            type="button"
-            onClick={() => toggleProvider(p)}
-            className={cn(
-              'inline-flex items-center gap-1.5 border rounded-full px-1 py-0.5 transition-all cursor-pointer',
-              provider === p
-                ? 'border-indigo-300 bg-indigo-50 opacity-100'
-                : 'border-zinc-200 opacity-50 hover:opacity-80',
-            )}
-          >
-            <ProviderBadge provider={p} />
-            {providerCounts[p] != null && (
-              <span className={cn('text-2xs tabular-nums pr-1', provider === p ? 'text-indigo-600' : 'text-zinc-400')}>
-                {providerCounts[p].toLocaleString()}
-              </span>
-            )}
-          </button>
-        ))}
-        {provider && <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => toggleProvider(provider)}>Clear</Btn>}
-      </div>
-
-      {/* Results */}
-      <Panel
-        title={isSearch ? `Results for "${debouncedQuery.trim()}"` : 'All conversations'}
-        action={<span className="text-xs text-zinc-400 tabular-nums">{items.length}{hasMore ? '+' : ''}</span>}
-      >
-        {error && <p className="text-red-600 text-[0.8125rem] px-4 py-3">{error}</p>}
-        <ConversationList items={items} showSnippet={isSearch} searchQuery={isSearch ? debouncedQuery.trim() : undefined} />
-        {hasMore && (
-          <div className="px-4 py-3 border-t border-zinc-100 text-center">
-            <Btn variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
-              {loadingMore ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading...</> : 'Load more'}
-            </Btn>
+    <div className="h-screen flex flex-col overflow-hidden bg-white">
+      {/* ── Top bar ── */}
+      <header className="flex items-center gap-3 h-12 px-4 border-b border-zinc-200 bg-white shrink-0 z-20">
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-indigo-600 text-white shrink-0">
+            <MessageSquareText className="w-3.5 h-3.5" />
           </div>
-        )}
-      </Panel>
-    </PageShell>
+          <span className="text-sm font-semibold text-zinc-900 hidden sm:block">Chat Archive</span>
+        </div>
+
+        <div className="flex-1 max-w-xl mx-2">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400 pointer-events-none" />
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => handleQueryChange(e.target.value)}
+              placeholder="Search conversations...  /"
+              className="w-full h-8 pl-8 pr-8 text-sm bg-zinc-100/80 rounded-lg border-none outline-none placeholder:text-zinc-400 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:shadow-sm transition-all"
+            />
+            {busy && <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400 animate-spin" />}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <Btn variant="secondary" onClick={() => setImportDrawerOpen(true)} className="h-8 text-xs">
+            <ArrowUpFromLine className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Import</span>
+          </Btn>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="w-8 h-8 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+            title="Settings"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="w-8 h-8 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+            title="Log out"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
+
+      {/* ── Split pane ── */}
+      <div className="flex-1 flex min-h-0">
+        {/* Left panel: conversation list */}
+        <aside className={cn(
+          'w-full md:w-[380px] lg:w-[420px] border-r border-zinc-200 flex flex-col shrink-0 bg-zinc-50/40',
+          selectedConversationId && 'hidden md:flex',
+        )}>
+          {/* Provider filter pills */}
+          {providerOptions.length > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-zinc-100 overflow-x-auto shrink-0">
+              {providerOptions.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => handleProviderChange(p)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-all cursor-pointer border',
+                    provider === p
+                      ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                      : 'bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50',
+                  )}
+                >
+                  <ProviderBadge provider={p} />
+                  {providerCounts[p] != null && (
+                    <span className="text-2xs tabular-nums opacity-70">{providerCounts[p].toLocaleString()}</span>
+                  )}
+                </button>
+              ))}
+              {provider && (
+                <button
+                  type="button"
+                  onClick={() => handleProviderChange(provider)}
+                  className="text-xs text-zinc-400 hover:text-zinc-600 px-1 shrink-0"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* List heading */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-100 shrink-0">
+            <span className="text-xs font-medium text-zinc-500">
+              {isSearch ? `Results for "${debouncedQuery.trim()}"` : 'All conversations'}
+            </span>
+            <span className="text-2xs text-zinc-400 tabular-nums">{items.length}{hasMore ? '+' : ''}</span>
+          </div>
+
+          {/* Conversation list */}
+          <div className="flex-1 overflow-y-auto scroll-thin">
+            {listError && <p className="text-red-600 text-xs px-3 py-2">{listError}</p>}
+            {items.length === 0 && !busy && !listError && (
+              <div className="py-12 px-4 text-center text-xs text-zinc-400">
+                {isSearch ? 'No matching conversations' : 'No conversations'}
+              </div>
+            )}
+            {items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => selectConversation(item.id)}
+                className={cn(
+                  'w-full text-left px-3 py-2.5 border-b border-zinc-100 transition-colors cursor-pointer',
+                  selectedConversationId === String(item.id)
+                    ? 'bg-indigo-50/80 border-l-2 border-l-indigo-500'
+                    : 'hover:bg-zinc-100/60 border-l-2 border-l-transparent',
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-[0.8125rem] font-medium truncate leading-snug">{item.title}</span>
+                  <span className="shrink-0 mt-0.5"><ProviderBadge provider={item.provider} /></span>
+                </div>
+                <div className="text-xs text-zinc-400 mt-0.5 truncate" title={formatDateFull(item.updated_at || item.last_message_at)}>
+                  {item.message_count} msgs · {timeAgo(item.updated_at || item.last_message_at)}
+                </div>
+                {isSearch && item.snippet && (
+                  <span
+                    className="block text-xs text-zinc-500 mt-1 leading-snug line-clamp-2 [&_mark]:bg-yellow-200 [&_mark]:text-zinc-900 [&_mark]:rounded-sm [&_mark]:px-px [&_em]:bg-yellow-200 [&_em]:not-italic [&_em]:text-zinc-900 [&_em]:rounded-sm [&_em]:px-px"
+                    dangerouslySetInnerHTML={{ __html: item.snippet }}
+                  />
+                )}
+              </button>
+            ))}
+            {hasMore && (
+              <div className="px-3 py-3 text-center">
+                <Btn variant="ghost" className="text-xs w-full" onClick={() => void loadMore()} disabled={loadingMore}>
+                  {loadingMore ? <><Loader2 className="w-3 h-3 animate-spin" /> Loading...</> : 'Load more'}
+                </Btn>
+              </div>
+            )}
+          </div>
+
+          {/* Stats footer */}
+          {totalStats.conversations > 0 && (
+            <div className="px-3 py-1.5 border-t border-zinc-100 text-2xs text-zinc-400 shrink-0 tabular-nums">
+              {totalStats.conversations.toLocaleString()} conversations · {totalStats.messages.toLocaleString()} messages
+            </div>
+          )}
+        </aside>
+
+        {/* Right panel: conversation detail */}
+        <main className={cn(
+          'flex-1 min-w-0 flex flex-col bg-white',
+          !selectedConversationId && 'hidden md:flex',
+        )}>
+          {selectedConversationId
+            ? <ConversationDetailPanel key={selectedConversationId} id={selectedConversationId} highlightQuery={highlightQuery} onBack={clearSelection} />
+            : <EmptyDetailState hasData={totalStats.conversations > 0} onImport={() => setImportDrawerOpen(true)} />
+          }
+        </main>
+      </div>
+
+      {/* ── Overlays ── */}
+      {importDrawerOpen && (
+        <ImportDrawer
+          onClose={() => setImportDrawerOpen(false)}
+          onImportComplete={handleImportComplete}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsModal onClose={() => setSettingsOpen(false)} />
+      )}
+    </div>
   )
 }
 
-// ── Conversation detail ──
+function EmptyDetailState({ hasData, onImport }: { hasData: boolean; onImport: () => void }) {
+  return (
+    <div className="flex-1 flex items-center justify-center p-8">
+      <div className="text-center max-w-xs animate-fade-in">
+        {hasData ? (
+          <>
+            <MessageSquareText className="w-10 h-10 text-zinc-200 mx-auto mb-3" />
+            <p className="text-sm font-medium text-zinc-400">Select a conversation</p>
+            <p className="text-xs text-zinc-400 mt-1">Pick one from the list or search to find it</p>
+          </>
+        ) : (
+          <>
+            <Upload className="w-10 h-10 text-zinc-200 mx-auto mb-3" />
+            <p className="text-sm font-medium text-zinc-500">No conversations yet</p>
+            <p className="text-xs text-zinc-400 mt-1 mb-4">Import a ChatGPT, Claude, Gemini, Google AI Studio, Kimi, or Pi export to start browsing</p>
+            <Btn onClick={onImport}>Import</Btn>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
 
-function ConversationDetailPage() {
-  const { conversationId } = useParams()
-  const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
+// ── Conversation detail panel ──
+
+function ConversationDetailPanel({ id, highlightQuery, onBack }: { id: string; highlightQuery: string; onBack: () => void }) {
   const [conversation, setConversation] = useState<ConversationDetail | null>(null)
   const [error, setError] = useState('')
-  const highlightQuery = searchParams.get('q') || ''
   const scrolledRef = useRef(false)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!conversationId) return
     scrolledRef.current = false
-    api.getConversation(conversationId).then(setConversation).catch((err: Error) => setError(err.message))
-  }, [conversationId])
+    if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0
+    api.getConversation(id).then(setConversation).catch((err: Error) => setError(err.message))
+  }, [id])
 
   useEffect(() => {
     if (!conversation || !highlightQuery || scrolledRef.current) return
     scrolledRef.current = true
     requestAnimationFrame(() => {
-      document.querySelector('.search-hl')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      const el = scrollContainerRef.current?.querySelector('.search-hl')
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     })
   }, [conversation, highlightQuery])
 
-  if (error) return <PageShell title="Error"><p className="text-red-600 text-[0.8125rem]">{error}</p></PageShell>
-  if (!conversation) return <PageShell title="Conversation"><p className="text-zinc-400 text-[0.8125rem]">Loading...</p></PageShell>
+  if (error) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-8">
+        <p className="text-red-600 text-sm">{error}</p>
+      </div>
+    )
+  }
 
-  const backTo = highlightQuery ? `/?q=${encodeURIComponent(highlightQuery)}` : '/'
+  if (!conversation) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-8">
+        <Loader2 className="w-5 h-5 text-zinc-300 animate-spin" />
+      </div>
+    )
+  }
+
   const visibleMessages = conversation.messages.filter((msg) => shouldDisplayMessage(msg))
 
   return (
-    <div className="max-w-[1100px] mx-auto px-6 py-6 pb-12">
-      <Btn variant="ghost" onClick={() => navigate(backTo)} className="mb-3 -ml-2 text-xs">
-        <ChevronLeft className="w-3.5 h-3.5" /> Back to {highlightQuery ? 'results' : 'conversations'}
-      </Btn>
-
-      <div className="flex items-center gap-3 mb-3">
-        <h2 className="text-lg font-semibold tracking-tight flex-1 min-w-0 truncate">{conversation.title}</h2>
-        <ProviderBadge provider={conversation.provider} />
+    <div className="flex flex-col h-full animate-fade-in">
+      {/* Sticky header */}
+      <div className="shrink-0 border-b border-zinc-200 bg-white px-6 py-3 z-10">
+        <button
+          type="button"
+          onClick={onBack}
+          className="md:hidden inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 mb-2 -ml-1"
+        >
+          <ChevronLeft className="w-3.5 h-3.5" /> Back
+        </button>
+        <div className="flex items-center gap-3">
+          <h2 className="text-base font-semibold tracking-tight truncate flex-1 min-w-0">{conversation.title}</h2>
+          <ProviderBadge provider={conversation.provider} />
+        </div>
+        <div className="text-xs text-zinc-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+          {conversation.created_at && <span title={formatDateFull(conversation.created_at)}>{formatDateShort(conversation.created_at)}</span>}
+          <span>{conversation.messages.length} messages</span>
+          {conversation.source_import && <span className="truncate">from {conversation.source_import.original_filename}</span>}
+        </div>
       </div>
 
-      <div className="flex gap-6 px-4 py-3 mb-4 bg-zinc-50 border border-zinc-200 rounded-lg text-xs">
-        {[
-          { label: 'Created', value: formatDateShort(conversation.created_at) },
-          { label: 'Updated', value: formatDateShort(conversation.updated_at) },
-          { label: 'Messages', value: String(conversation.messages.length) },
-          { label: 'Source', value: conversation.source_import?.original_filename ?? 'Unknown' },
-        ].map(({ label, value }) => (
-          <dl key={label} className="m-0">
-            <dt className="text-2xs font-semibold uppercase tracking-wider text-zinc-400">{label}</dt>
-            <dd className="mt-0.5 text-zinc-700">{value}</dd>
-          </dl>
-        ))}
-      </div>
-
-      <div className="border border-zinc-200 rounded-lg overflow-hidden">
-        {visibleMessages.map((msg) => (
-          <MessageBlock key={msg.id} msg={msg} highlightQuery={highlightQuery} />
-        ))}
+      {/* Messages */}
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto scroll-thin">
+        <div className="max-w-[900px] mx-auto py-1">
+          {visibleMessages.map((msg) => (
+            <MessageBlock key={msg.id} msg={msg} highlightQuery={highlightQuery} />
+          ))}
+        </div>
       </div>
     </div>
   )
 }
+
+// ── Message display ──
 
 function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messages'][0]; highlightQuery: string }) {
   const presentation = getMessagePresentation(msg)
   const research = getKimiResearchData(msg.metadata)
   const thinking = getClaudeThinkingData(msg)
   const showBody = presentation.kind === 'code' || presentation.text.trim().length > 0
+  const borderColor = RoleBorderStyles[msg.role] || 'border-l-zinc-200'
 
   return (
-    <div className={cn('px-5 py-4 border-b border-zinc-100 last:border-b-0', msg.role === 'assistant' && 'bg-zinc-50/70')}>
-      <div className="flex items-center gap-2 mb-2">
-        <RoleMarker role={msg.role} />
-        <span className="text-[0.8125rem] font-semibold">{msg.author_name || roleDisplayName(msg.role)}</span>
-        <span className="text-2xs text-zinc-400 font-mono" title={formatDateFull(msg.created_at)}>
-          #{msg.sequence}{msg.created_at ? ` · ${timeAgo(msg.created_at)}` : ''}{msg.model ? ` · ${msg.model}` : ''}
+    <div className={cn(
+      'px-5 py-4 border-b border-zinc-100 last:border-b-0 border-l-2',
+      borderColor,
+      msg.role === 'assistant' && 'bg-zinc-50/50',
+    )}>
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <RoleMarker role={msg.role} />
+          <span className="text-[0.8125rem] font-semibold truncate">{msg.author_name || roleDisplayName(msg.role)}</span>
+          {msg.model && <span className="text-2xs text-zinc-400 truncate hidden sm:inline">{msg.model}</span>}
+        </div>
+        <span className="text-2xs text-zinc-400 font-mono whitespace-nowrap shrink-0" title={formatDateFull(msg.created_at)}>
+          #{msg.sequence}{msg.created_at ? ` · ${timeAgo(msg.created_at)}` : ''}
         </span>
       </div>
       {showBody && (presentation.kind === 'markdown' ? (
@@ -1095,70 +1100,202 @@ function SectionCard({ title, icon, children }: { title: string; icon: React.Rea
   )
 }
 
-// ── Settings ──
+// ── Attachments ──
 
-function SettingsPage() {
-  const [currentPassword, setCurrentPassword] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [status, setStatus] = useState('')
+function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) {
+  const [open, setOpen] = useState(false)
+  const preview = getExtractedContent(attachment.metadata)
+  const info = describeAttachment(attachment.metadata)
+  const sourceUrl = getAttachmentSourceUrl(attachment.metadata)
+  const attachmentUrl = getAttachmentFileUrl(attachment)
+  const isImage = isImageAttachment(attachment)
+  const isPdf = isPdfAttachment(attachment)
+  const isVideo = isVideoAttachment(attachment)
+  const isAudio = isAudioAttachment(attachment)
+  const canPreview = Boolean(preview || isImage)
+  const canRichPreview = Boolean(isImage || isPdf || isVideo || isAudio)
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border border-zinc-200 rounded-md bg-white mb-1.5 text-[0.8125rem]">
+        <div className="flex items-center gap-2 min-w-0">
+          <Paperclip className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+          <span className="font-medium truncate">{attachment.filename}</span>
+          {info && <span className="text-xs text-zinc-400 truncate">{info}</span>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {sourceUrl && (
+            <a href={sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-violet-700 hover:text-violet-900">
+              <ExternalLink className="w-3 h-3" /> Source
+            </a>
+          )}
+          {attachmentUrl && (
+            <a href={attachmentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-900">
+              <ExternalLink className="w-3 h-3" /> Open
+            </a>
+          )}
+          {canPreview || canRichPreview ? (
+            <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => setOpen((v) => !v)}>
+              {open ? <><EyeOff className="w-3 h-3" /> Hide</> : <><Eye className="w-3 h-3" /> View</>}
+            </Btn>
+          ) : (
+            <span className="text-xs text-zinc-400">No text</span>
+          )}
+        </div>
+      </div>
+      {open && (
+        <div className="mb-1.5 space-y-2">
+          {isImage && attachmentUrl && (
+            <a href={attachmentUrl} target="_blank" rel="noreferrer" className="block rounded-md border border-zinc-200 bg-zinc-50 p-2 hover:bg-zinc-100 transition-colors">
+              <img src={attachmentUrl} alt={attachment.filename} className="block max-h-[420px] max-w-full rounded object-contain mx-auto" loading="lazy" />
+            </a>
+          )}
+          {isPdf && attachmentUrl && (
+            <div className="rounded-md border border-zinc-200 bg-white overflow-hidden">
+              <iframe src={attachmentUrl} title={attachment.filename} className="block w-full h-[420px]" />
+            </div>
+          )}
+          {isVideo && attachmentUrl && (
+            <video src={attachmentUrl} controls className="block max-h-[420px] max-w-full rounded border border-zinc-200 bg-black mx-auto" preload="metadata" />
+          )}
+          {isAudio && attachmentUrl && (
+            <audio src={attachmentUrl} controls className="w-full" preload="metadata" />
+          )}
+          {preview && (
+            <pre className="p-3 rounded-md bg-zinc-100 border border-zinc-200 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed max-h-[300px] overflow-y-auto">{preview}</pre>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+// ── Import drawer ──
+
+function ImportDrawer({ onClose, onImportComplete }: { onClose: () => void; onImportComplete: () => void }) {
+  const [imports, setImports] = useState<ImportRecord[]>([])
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const loadImports = useCallback(async () => {
+    try { const items = await api.listImports(); setImports(items); setError(''); return items }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not load imports.'); return [] }
+  }, [])
+
+  const stopPolling = useCallback(() => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }, [])
+
+  const startPolling = useCallback(() => {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      const items = await loadImports()
+      if (!items.some((i) => i.status === 'processing' || i.status === 'queued')) {
+        stopPolling()
+        onImportComplete()
+      }
+    }, 2000)
+  }, [loadImports, stopPolling, onImportComplete])
+
+  useEffect(() => { void loadImports(); return stopPolling }, [loadImports, stopPolling])
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
 
   const onSubmit = async (e: FormEvent) => {
-    e.preventDefault(); setStatus('')
-    try { await api.changePassword(currentPassword, newPassword); setCurrentPassword(''); setNewPassword(''); setStatus('Password updated.') }
-    catch (err) { setStatus(err instanceof Error ? err.message : 'Could not update the password.') }
+    e.preventDefault()
+    if (!selectedFile) return
+    setBusy(true); setError('')
+    try {
+      await api.uploadImport(selectedFile)
+      setSelectedFile(null)
+      const fi = document.querySelector('.import-drawer-upload input[type="file"]') as HTMLInputElement | null
+      if (fi) fi.value = ''
+      await loadImports(); startPolling()
+    } catch (err) { setError(err instanceof Error ? err.message : 'Upload failed.') }
+    finally { setBusy(false) }
+  }
+
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) setSelectedFile(f) }
+  const hasPending = imports.some((i) => i.status === 'processing' || i.status === 'queued')
+  const onDelete = async (item: ImportRecord) => {
+    if (item.status === 'processing' || item.status === 'queued') return
+    const confirmed = window.confirm(`Delete ${item.original_filename} and all messages, attachments, and stored files imported from it?`)
+    if (!confirmed) return
+    setDeletingId(item.id); setError('')
+    try { await api.deleteImport(item.id); await loadImports(); onImportComplete() }
+    catch (err) { setError(err instanceof Error ? err.message : 'Could not delete import.') }
+    finally { setDeletingId(null) }
   }
 
   return (
-    <PageShell title="Settings">
-      <Panel title="Change password">
-        <form className="grid gap-3 max-w-sm p-4" onSubmit={onSubmit}>
-          <FieldLabel label="Current password"><input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required className="input" /></FieldLabel>
-          <FieldLabel label="New password"><input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required className="input" /></FieldLabel>
-          <div className="flex items-center gap-3 mt-1">
-            <Btn type="submit">Save</Btn>
-            {status && <p className={cn('text-[0.8125rem]', status === 'Password updated.' ? 'text-emerald-600' : 'text-red-600')}>{status}</p>}
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/15 z-40 animate-fade-in" onClick={onClose} />
+      {/* Drawer */}
+      <div className="fixed inset-y-0 right-0 w-full max-w-lg bg-white shadow-2xl z-50 flex flex-col animate-slide-in-right">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 h-12 border-b border-zinc-200 shrink-0">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold">Import</h2>
+            {hasPending && <Badge variant="processing">Processing</Badge>}
           </div>
-        </form>
-      </Panel>
-    </PageShell>
-  )
-}
+          <button type="button" onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
 
-// ── Layout primitives ──
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto scroll-thin p-5 space-y-4">
+          {/* Upload */}
+          <form onSubmit={onSubmit}>
+            <div
+              className={cn('import-drawer-upload border-2 border-dashed rounded-lg p-6 text-center transition-colors', dragOver ? 'border-indigo-400 bg-indigo-50' : 'border-zinc-300 hover:border-zinc-400')}
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+            >
+              <label className="flex flex-col items-center gap-2 cursor-pointer">
+                <ArrowUpFromLine className="w-5 h-5 text-zinc-400" />
+                <span className="text-sm font-medium">{selectedFile ? selectedFile.name : 'Drop file or click to browse'}</span>
+                <span className="text-xs text-zinc-400">ChatGPT, Claude, Gemini, Google AI Studio, Kimi, Pi exports (.zip, .json)</span>
+                <input type="file" accept=".zip,.json" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} className="text-xs text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-zinc-200 file:bg-white file:text-zinc-600 file:font-medium file:text-xs file:cursor-pointer" />
+              </label>
+              <div className="flex items-center gap-3 mt-3 justify-center">
+                <Btn type="submit" disabled={busy || !selectedFile}>
+                  {busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Uploading...</> : 'Upload'}
+                </Btn>
+              </div>
+            </div>
+            {error && <p className="text-red-600 text-xs mt-2">{error}</p>}
+          </form>
 
-function PageShell({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
-  return (
-    <div className="max-w-[960px] mx-auto px-6 py-6 pb-12">
-      <div className="mb-5">
-        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
-        {desc && <p className="text-[0.8125rem] text-zinc-500 mt-0.5">{desc}</p>}
+          {/* History */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">History</h3>
+              <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => void loadImports()}>Refresh</Btn>
+            </div>
+            <div className="border border-zinc-200 rounded-lg overflow-hidden">
+              <ImportList items={imports} deletingId={deletingId} onDelete={onDelete} />
+            </div>
+          </div>
+        </div>
       </div>
-      {children}
-    </div>
+    </>
   )
 }
 
-function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="border border-zinc-200 rounded-lg overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-200 bg-zinc-50/50">
-        <h3 className="text-[0.8125rem] font-semibold">{title}</h3>
-        {action}
-      </div>
-      <div>{children}</div>
-    </div>
-  )
-}
-
-function EmptyState({ children }: { children: React.ReactNode }) {
-  return <div className="py-10 px-4 text-center text-[0.8125rem] text-zinc-400">{children}</div>
-}
-
-// ── Data display components ──
+// ── Import list components ──
 
 function ImportList({ items, compact = false, deletingId, onDelete }: { items: ImportRecord[]; compact?: boolean; deletingId?: number | null; onDelete?: (item: ImportRecord) => void }) {
   if (!items.length) return <EmptyState>No imports</EmptyState>
-
   return (
     <div>
       {items.map((item) => <ImportListItem key={item.id} item={item} compact={compact} deletingId={deletingId} onDelete={onDelete} />)}
@@ -1229,7 +1366,7 @@ function ImportListItem({ item, compact = false, deletingId, onDelete }: { item:
         <div className="px-4 pb-3">
           <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 space-y-2">
             <div className="text-xs text-zinc-500">{item.summary.inserted_sources ?? 0} stored files · {item.summary.unmatched_artifact_count ?? 0} unmatched preserved artifacts</div>
-            {loadingSources && <div className="text-xs text-zinc-400">Loading artifacts…</div>}
+            {loadingSources && <div className="text-xs text-zinc-400">Loading artifacts...</div>}
             {sourceError && <div className="text-xs text-red-600">{sourceError}</div>}
             {!loadingSources && !sourceError && preservedSources.length > 0 && (
               <div className="space-y-1.5">
@@ -1265,102 +1402,52 @@ function ImportSourceItem({ source }: { source: ImportSource }) {
   )
 }
 
-function ConversationList({ items, showSnippet = false, searchQuery }: { items: Array<ConversationListItem & { snippet?: string }>; showSnippet?: boolean; searchQuery?: string }) {
-  const navigate = useNavigate()
-  if (!items.length) return <EmptyState>{showSnippet ? 'No matching conversations' : 'No conversations'}</EmptyState>
+// ── Settings modal ──
 
-  return (
-    <div>
-      {items.map((item) => {
-        const target = searchQuery ? `/conversations/${item.id}?q=${encodeURIComponent(searchQuery)}` : `/conversations/${item.id}`
-        return (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => navigate(target)}
-            className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 w-full px-4 py-2.5 border-b border-zinc-100 last:border-b-0 text-left hover:bg-zinc-50 transition-colors cursor-pointer"
-          >
-            <span className="text-[0.8125rem] font-medium truncate">{item.title}</span>
-            <span className="row-span-2 self-center"><ProviderBadge provider={item.provider} /></span>
-            <span className="text-xs text-zinc-400 truncate" title={formatDateFull(item.updated_at || item.last_message_at)}>
-              {item.message_count} msgs · {timeAgo(item.updated_at || item.last_message_at)}
-            </span>
-            {showSnippet && item.snippet && (
-              <span className="col-span-full text-xs text-zinc-500 mt-0.5 leading-snug [&_mark]:bg-yellow-200 [&_mark]:text-zinc-900 [&_mark]:rounded-sm [&_mark]:px-px [&_em]:bg-yellow-200 [&_em]:not-italic [&_em]:text-zinc-900 [&_em]:rounded-sm [&_em]:px-px" dangerouslySetInnerHTML={{ __html: item.snippet }} />
-            )}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
+function SettingsModal({ onClose }: { onClose: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [status, setStatus] = useState('')
 
-function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) {
-  const [open, setOpen] = useState(false)
-  const preview = getExtractedContent(attachment.metadata)
-  const info = describeAttachment(attachment.metadata)
-  const sourceUrl = getAttachmentSourceUrl(attachment.metadata)
-  const attachmentUrl = getAttachmentFileUrl(attachment)
-  const isImage = isImageAttachment(attachment)
-  const isPdf = isPdfAttachment(attachment)
-  const isVideo = isVideoAttachment(attachment)
-  const isAudio = isAudioAttachment(attachment)
-  const canPreview = Boolean(preview || isImage)
-  const canRichPreview = Boolean(isImage || isPdf || isVideo || isAudio)
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault(); setStatus('')
+    try { await api.changePassword(currentPassword, newPassword); setCurrentPassword(''); setNewPassword(''); setStatus('Password updated.') }
+    catch (err) { setStatus(err instanceof Error ? err.message : 'Could not update the password.') }
+  }
 
   return (
     <>
-      <div className="flex items-center justify-between gap-2 px-3 py-2 border border-zinc-200 rounded-md bg-white mb-1.5 text-[0.8125rem]">
-        <div className="flex items-center gap-2 min-w-0">
-          <Paperclip className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-          <span className="font-medium truncate">{attachment.filename}</span>
-          {info && <span className="text-xs text-zinc-400 truncate">{info}</span>}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {sourceUrl && (
-            <a href={sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-violet-700 hover:text-violet-900">
-              <ExternalLink className="w-3 h-3" /> Source
-            </a>
-          )}
-          {attachmentUrl && (
-            <a href={attachmentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-900">
-              <ExternalLink className="w-3 h-3" /> Open
-            </a>
-          )}
-          {canPreview || canRichPreview ? (
-            <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => setOpen((v) => !v)}>
-              {open ? <><EyeOff className="w-3 h-3" /> Hide</> : <><Eye className="w-3 h-3" /> View</>}
-            </Btn>
-          ) : (
-            <span className="text-xs text-zinc-400">No text</span>
-          )}
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/15 z-40 animate-fade-in" onClick={onClose} />
+      {/* Modal */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm pointer-events-auto animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-200">
+            <h2 className="text-sm font-semibold">Settings</h2>
+            <button type="button" onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <form className="p-5 space-y-3" onSubmit={onSubmit}>
+            <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Change password</h3>
+            <FieldLabel label="Current password"><input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required className="input" /></FieldLabel>
+            <FieldLabel label="New password"><input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required className="input" /></FieldLabel>
+            <div className="flex items-center gap-3 pt-1">
+              <Btn variant="secondary" type="button" onClick={onClose}>Cancel</Btn>
+              <Btn type="submit">Save</Btn>
+              {status && <p className={cn('text-xs', status === 'Password updated.' ? 'text-emerald-600' : 'text-red-600')}>{status}</p>}
+            </div>
+          </form>
         </div>
       </div>
-      {open && (
-        <div className="mb-1.5 space-y-2">
-          {isImage && attachmentUrl && (
-            <a href={attachmentUrl} target="_blank" rel="noreferrer" className="block rounded-md border border-zinc-200 bg-zinc-50 p-2 hover:bg-zinc-100 transition-colors">
-              <img src={attachmentUrl} alt={attachment.filename} className="block max-h-[420px] max-w-full rounded object-contain mx-auto" loading="lazy" />
-            </a>
-          )}
-          {isPdf && attachmentUrl && (
-            <div className="rounded-md border border-zinc-200 bg-white overflow-hidden">
-              <iframe src={attachmentUrl} title={attachment.filename} className="block w-full h-[420px]" />
-            </div>
-          )}
-          {isVideo && attachmentUrl && (
-            <video src={attachmentUrl} controls className="block max-h-[420px] max-w-full rounded border border-zinc-200 bg-black mx-auto" preload="metadata" />
-          )}
-          {isAudio && attachmentUrl && (
-            <audio src={attachmentUrl} controls className="w-full" preload="metadata" />
-          )}
-          {preview && (
-            <pre className="p-3 rounded-md bg-zinc-100 border border-zinc-200 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed max-h-[300px] overflow-y-auto">{preview}</pre>
-          )}
-        </div>
-      )}
     </>
   )
+}
+
+// ── Layout primitives ──
+
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return <div className="py-10 px-4 text-center text-[0.8125rem] text-zinc-400">{children}</div>
 }
 
 // ── Helpers ──

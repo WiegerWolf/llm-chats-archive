@@ -15,6 +15,7 @@
       transition-colors placeholder:text-zinc-400
       focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20;
   }
+
   /* ── Markdown body ── */
   .markdown-body p { @apply my-1; }
   .markdown-body p:first-child { @apply mt-0; }
@@ -67,4 +68,10 @@
   .mermaid-diagram svg {
     @apply h-auto max-w-full;
   }
+
+  /* ── Scrollbar styling ── */
+  .scroll-thin::-webkit-scrollbar { width: 6px; }
+  .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+  .scroll-thin::-webkit-scrollbar-thumb { @apply bg-zinc-200 rounded-full; }
+  .scroll-thin::-webkit-scrollbar-thumb:hover { @apply bg-zinc-300; }
 }
