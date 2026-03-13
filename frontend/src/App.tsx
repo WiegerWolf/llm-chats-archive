@@ -335,7 +335,7 @@ function StatsPage() {
         <div className="flex flex-col items-center gap-3 py-16 border-2 border-dashed border-zinc-200 rounded-lg text-center">
           <Upload className="w-8 h-8 text-zinc-300" />
           <h3 className="text-base font-semibold">No data yet</h3>
-          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT, Claude, Gemini, Google AI Studio, or Kimi export to start browsing your conversations.</p>
+          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT export (single-file or sharded), Claude, Gemini, Google AI Studio, or Kimi bundle to start browsing your conversations.</p>
           <Btn onClick={() => navigate('/imports')}>Go to Imports</Btn>
         </div>
       </PageShell>
@@ -465,7 +465,7 @@ function ImportsPage() {
           <label className="flex flex-col items-center gap-2 cursor-pointer">
             <ArrowUpFromLine className="w-6 h-6 text-zinc-400" />
             <span className="text-sm font-medium">{selectedFile ? selectedFile.name : 'Drop file here or click to browse'}</span>
-            <span className="text-xs text-zinc-400">ChatGPT, Claude, Gemini, Google AI Studio, and Kimi capture bundles supported</span>
+            <span className="text-xs text-zinc-400">ChatGPT single-file and sharded exports, Claude, Gemini, Google AI Studio, and Kimi bundles supported</span>
             <input type="file" accept=".zip,.json" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} className="text-xs text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-zinc-200 file:bg-white file:text-zinc-600 file:font-medium file:text-xs file:cursor-pointer" />
           </label>
           <div className="flex items-center gap-3 mt-3 justify-center">
@@ -686,9 +686,11 @@ function ConversationDetailPage() {
 }
 
 function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messages'][0]; highlightQuery: string }) {
-  const html = renderMarkdown(msg.text)
+  const visibleText = getVisibleMessageText(msg)
+  const html = renderMarkdown(visibleText)
   const highlighted = highlightQuery ? highlightHtml(html, highlightQuery) : html
   const research = getKimiResearchData(msg.metadata)
+  const thinking = getClaudeThinkingData(msg)
 
   return (
     <div className={cn('px-5 py-4 border-b border-zinc-100 last:border-b-0', msg.role === 'assistant' && 'bg-zinc-50/70')}>
@@ -700,6 +702,7 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
         </span>
       </div>
       <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      {thinking.length > 0 && <ThinkingBlock thoughts={thinking} highlightQuery={highlightQuery} />}
       {research && <KimiResearchBlock data={research} highlightQuery={highlightQuery} />}
       {msg.attachments.length > 0 && (
         <div className="mt-3 pt-3 border-t border-zinc-200">
@@ -708,6 +711,26 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
         </div>
       )}
     </div>
+  )
+}
+
+function ThinkingBlock({ thoughts, highlightQuery }: { thoughts: ClaudeThinkingEntry[]; highlightQuery: string }) {
+  return (
+    <details className="mt-3 rounded-md border border-zinc-200 bg-white">
+      <summary className="cursor-pointer list-none px-3 py-2 text-[0.8125rem] font-medium text-zinc-700">Thinking</summary>
+      <div className="space-y-2 border-t border-zinc-200 p-3">
+        {thoughts.map((thought, index) => {
+          const thoughtHtml = renderMarkdown(thought.text)
+          const highlightedThought = highlightQuery ? highlightHtml(thoughtHtml, highlightQuery) : thoughtHtml
+          return (
+            <div key={`${thought.created_at || 'thought'}-${index}`} className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
+              <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlightedThought }} />
+              {thought.summaries.length > 0 && <p className="mt-2 text-2xs text-zinc-500">{thought.summaries.join(' · ')}</p>}
+            </div>
+          )
+        })}
+      </div>
+    </details>
   )
 }
 
@@ -1168,6 +1191,88 @@ type KimiResearchData = {
   references: KimiResearchRef[]
   markdownArtifact?: KimiResearchArtifact
   htmlArtifact?: KimiResearchArtifact
+}
+
+type ClaudeThinkingEntry = {
+  text: string
+  created_at?: string
+  summaries: string[]
+}
+
+function getVisibleMessageText(msg: ConversationDetail['messages'][0]): string {
+  const blocks = asArray(asRecord(msg.content)?.blocks)
+  const visibleParts = blocks
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((block) => renderClaudeVisibleBlock(block))
+    .filter(Boolean)
+
+  if (visibleParts.length > 0) return visibleParts.join('\n\n').trim()
+  return msg.text
+}
+
+function getClaudeThinkingData(msg: ConversationDetail['messages'][0]): ClaudeThinkingEntry[] {
+  const fromMetadata = asArray(msg.metadata?.thinking)
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((item) => ({
+      text: asString(item.text),
+      created_at: asString(item.created_at) || undefined,
+      summaries: asArray(item.summaries).map((value) => asString(value)).filter(Boolean),
+    }))
+    .filter((item) => item.text)
+  if (fromMetadata.length > 0) return fromMetadata
+
+  return asArray(asRecord(msg.content)?.blocks)
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .filter((block) => asString(block.type).toLowerCase() === 'thinking')
+    .map((block) => ({
+      text: asString(block.thinking),
+      created_at: asString(block.start_timestamp) || asString(block.stop_timestamp) || undefined,
+      summaries: asArray(block.summaries)
+        .map((item) => asRecord(item))
+        .filter(isPresent)
+        .map((item) => asString(item.summary))
+        .filter(Boolean),
+    }))
+    .filter((item) => item.text)
+}
+
+function renderClaudeVisibleBlock(block: Record<string, unknown>): string {
+  const blockType = asString(block.type).toLowerCase()
+  if (blockType === 'thinking' || blockType === 'token_budget') return ''
+  if (blockType === 'text') return asString(block.text)
+  if (blockType === 'voice_note') return [asString(block.title) || 'Voice note', asString(block.text)].filter(Boolean).join('\n').trim()
+  if (blockType === 'tool_result') {
+    const name = asString(block.name) || 'tool'
+    const content = flattenTextContent(block.content)
+    return content ? `Tool result (${name})\n${content}` : `Tool result (${name})`
+  }
+  if (blockType === 'tool_use') {
+    const name = asString(block.name) || 'tool'
+    const input = asRecord(block.input)
+    const details = [asString(input?.command), asString(input?.id), asString(input?.name)].filter(Boolean)
+    return details.length ? `Tool use (${name}): ${details.join(' - ')}` : `Tool use (${name})`
+  }
+  return flattenTextContent(block)
+}
+
+function flattenTextContent(value: unknown): string {
+  const text = asString(value)
+  if (text) return text
+  if (Array.isArray(value)) return value.map((item) => flattenTextContent(item)).filter(Boolean).join('\n').trim()
+  const record = asRecord(value)
+  if (!record) return ''
+  for (const key of ['text', 'result', 'output_text', 'content', 'message', 'value']) {
+    const nested = flattenTextContent(record[key])
+    if (nested) return nested
+  }
+  for (const key of ['contents', 'parts', 'segments', 'children']) {
+    const nested = flattenTextContent(record[key])
+    if (nested) return nested
+  }
+  return ''
 }
 
 function getKimiResearchData(metadata?: Record<string, unknown> | null): KimiResearchData | null {

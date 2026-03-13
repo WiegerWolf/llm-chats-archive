@@ -310,6 +310,7 @@ def parse_claude_export(export_path: Path) -> dict[str, Any]:
                     "metadata": {
                         "sender": raw_message.get("sender"),
                         "updated_at": iso_timestamp(raw_message.get("updated_at")),
+                        "thinking": extract_claude_thinking_blocks(raw_message),
                     },
                     "attachments": attachments,
                 }
@@ -357,7 +358,55 @@ def parse_claude_export(export_path: Path) -> dict[str, Any]:
 
 
 def parse_chatgpt_export(export_path: Path) -> dict[str, Any]:
-    payload = load_chatgpt_payload(export_path)
+    warnings: list[str] = []
+    sources: list[dict[str, Any]] = []
+    source_paths: set[tuple[str, str]] = set()
+    attachment_lookup: dict[str, str] = {}
+
+    if export_path.suffix.lower() == ".zip":
+        with ZipFile(export_path) as archive:
+            payload = load_chatgpt_payload_from_archive(archive)
+            attachment_lookup = build_chatgpt_attachment_lookup(archive)
+            result = normalize_chatgpt_payload(
+                payload,
+                archive=archive,
+                attachment_lookup=attachment_lookup,
+                warnings=warnings,
+                add_source=lambda source: register_chatgpt_source(source, sources, source_paths),
+            )
+    else:
+        payload = load_chatgpt_payload(export_path)
+        result = normalize_chatgpt_payload(
+            payload,
+            archive=None,
+            attachment_lookup=attachment_lookup,
+            warnings=warnings,
+            add_source=lambda source: register_chatgpt_source(source, sources, source_paths),
+        )
+
+    return {
+        "provider": "chatgpt",
+        "parser_version": "chatgpt:v2",
+        "conversations": result["conversations"],
+        "warnings": warnings,
+        "sources": sources,
+        "summary": {
+            "conversation_count": len(result["conversations"]),
+            "message_count": result["message_count"],
+            "attachment_count": result["attachment_count"],
+            "source_file_count": len(sources),
+        },
+    }
+
+
+def normalize_chatgpt_payload(
+    payload: Any,
+    *,
+    archive: ZipFile | None,
+    attachment_lookup: dict[str, str],
+    warnings: list[str],
+    add_source: Any,
+) -> dict[str, Any]:
     if isinstance(payload, dict):
         conversations = payload.get("conversations") or payload.get("items") or []
     else:
@@ -366,8 +415,8 @@ def parse_chatgpt_export(export_path: Path) -> dict[str, Any]:
         raise ImportParseError("ChatGPT export did not contain a conversation list.")
 
     normalized: list[dict[str, Any]] = []
-    warnings: list[str] = []
     message_total = 0
+    attachment_total = 0
 
     for index, conversation in enumerate(conversations, start=1):
         if not isinstance(conversation, dict):
@@ -390,9 +439,16 @@ def parse_chatgpt_export(export_path: Path) -> dict[str, Any]:
             author = message.get("author") or {}
             content = message.get("content") or {}
             role = normalize_role(author.get("role") or author.get("name"))
-            text = flatten_text(content)
+            text = flatten_chatgpt_content(content)
+            attachments = extract_chatgpt_attachments(
+                message,
+                archive=archive,
+                attachment_lookup=attachment_lookup,
+                add_source=add_source,
+                warnings=warnings,
+            )
 
-            if not text.strip() and role not in {"system", "tool"}:
+            if not text.strip() and role not in {"system", "tool"} and not attachments:
                 continue
 
             metadata = message.get("metadata") or {}
@@ -400,12 +456,13 @@ def parse_chatgpt_export(export_path: Path) -> dict[str, Any]:
                 {
                     "provider_message_id": message.get("id") or node.get("id"),
                     "role": role,
-                    "author_name": author.get("name") if isinstance(author, dict) else None,
+                    "author_name": chatgpt_author_name(author),
                     "model": metadata.get("model_slug") or metadata.get("default_model_slug"),
                     "created_at": iso_timestamp(message.get("create_time")),
-                    "text": text.strip(),
+                    "text": text.strip() or format_attachment_lines(attachments),
                     "content": content,
                     "metadata": metadata,
+                    "attachments": attachments,
                 }
             )
 
@@ -432,16 +489,12 @@ def parse_chatgpt_export(export_path: Path) -> dict[str, Any]:
             }
         )
         message_total += len(messages)
+        attachment_total += sum(len(message.get("attachments") or []) for message in messages)
 
     return {
-        "provider": "chatgpt",
-        "parser_version": "chatgpt:v1",
         "conversations": normalized,
-        "warnings": warnings,
-        "summary": {
-            "conversation_count": len(normalized),
-            "message_count": message_total,
-        },
+        "message_count": message_total,
+        "attachment_count": attachment_total,
     }
 
 
@@ -1017,12 +1070,246 @@ def iter_json_documents(export_path: Path) -> list[tuple[str, Any]]:
 def load_chatgpt_payload(export_path: Path) -> Any:
     if export_path.suffix.lower() == ".zip":
         with ZipFile(export_path) as archive:
-            for name in archive.namelist():
-                if name.lower().endswith("conversations.json"):
-                    with archive.open(name) as handle:
-                        return json.load(handle)
-        raise ImportParseError("ChatGPT export zip did not contain conversations.json.")
+            return load_chatgpt_payload_from_archive(archive)
     return load_json_file(export_path)
+
+
+def load_chatgpt_payload_from_archive(archive: ZipFile) -> Any:
+    manifest_name = next((name for name in archive.namelist() if name.lower().endswith("export_manifest.json")), None)
+    if manifest_name:
+        with archive.open(manifest_name) as handle:
+            manifest = json.load(handle)
+        sharded = load_chatgpt_payload_from_manifest(archive, manifest)
+        if sharded is not None:
+            return sharded
+
+    for name in archive.namelist():
+        if name.lower().endswith("conversations.json"):
+            with archive.open(name) as handle:
+                return json.load(handle)
+    raise ImportParseError("ChatGPT export zip did not contain a recognizable conversations document.")
+
+
+def load_chatgpt_payload_from_manifest(archive: ZipFile, manifest: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(manifest, dict):
+        return None
+    logical_files = manifest.get("logical_files")
+    if not isinstance(logical_files, dict):
+        return None
+    conversation_entry = logical_files.get("conversations.json")
+    if not isinstance(conversation_entry, dict):
+        return None
+    files = conversation_entry.get("files")
+    if not isinstance(files, list) or not files:
+        return None
+
+    combined: list[dict[str, Any]] = []
+    for name in files:
+        if not isinstance(name, str) or not name:
+            continue
+        with archive.open(name) as handle:
+            document = json.load(handle)
+        if isinstance(document, list):
+            combined.extend(item for item in document if isinstance(item, dict))
+        elif isinstance(document, dict):
+            shard_conversations = document.get("conversations") or document.get("items") or []
+            if isinstance(shard_conversations, list):
+                combined.extend(item for item in shard_conversations if isinstance(item, dict))
+
+    return combined or None
+
+
+def build_chatgpt_attachment_lookup(archive: ZipFile) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for name in archive.namelist():
+        if not name or name.endswith("/") or name.lower().endswith(".json") or name.lower().endswith(".html"):
+            continue
+        basename = PurePosixPath(name).name
+        lookup.setdefault(basename, name)
+    return lookup
+
+
+def extract_chatgpt_attachments(
+    message: dict[str, Any],
+    *,
+    archive: ZipFile | None,
+    attachment_lookup: dict[str, str],
+    add_source: Any,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    raw_metadata = message.get("metadata")
+    metadata: dict[str, Any] = {}
+    if isinstance(raw_metadata, dict):
+        metadata = raw_metadata
+    raw_attachments = metadata.get("attachments")
+    if not isinstance(raw_attachments, list):
+        return []
+
+    extracted: list[dict[str, Any]] = []
+    for attachment in raw_attachments:
+        if not isinstance(attachment, dict):
+            continue
+        extracted.append(
+            normalize_chatgpt_attachment(
+                attachment,
+                archive=archive,
+                attachment_lookup=attachment_lookup,
+                add_source=add_source,
+                warnings=warnings,
+            )
+        )
+    return extracted
+
+
+def normalize_chatgpt_attachment(
+    attachment: dict[str, Any],
+    *,
+    archive: ZipFile | None,
+    attachment_lookup: dict[str, str],
+    add_source: Any,
+    warnings: list[str],
+) -> dict[str, Any]:
+    attachment_id = str(attachment.get("id") or "").strip()
+    filename = str(attachment.get("name") or attachment.get("filename") or attachment_id or "attachment").strip() or "attachment"
+    path = find_chatgpt_attachment_path(attachment_id, filename, attachment_lookup)
+    mime_type = str(attachment.get("mimeType") or attachment.get("mime_type") or "").strip() or None
+    metadata = {
+        "source": "chatgpt_attachment",
+        "attachment_id": attachment_id or None,
+        "archive_path": path,
+        "size": attachment.get("size"),
+        "width": attachment.get("width"),
+        "height": attachment.get("height"),
+    }
+
+    if archive is not None and path:
+        raw = archive.read(path)
+        stored = store_blob_bytes(raw, filename, mime_type)
+        detected_mime = mime_type or detect_mime_type(filename, raw)
+        add_source(
+            {
+                "kind": "blob",
+                "relative_path": stored["blob_path"],
+                "sha256": stored["sha256"],
+                "metadata": {
+                    "source": "chatgpt_attachment",
+                    "archive_path": path,
+                    "filename": filename,
+                    "mime_type": detected_mime,
+                    "attachment_id": attachment_id or None,
+                    "size": len(raw),
+                },
+            }
+        )
+        return {
+            "filename": filename,
+            "mime_type": detected_mime,
+            "blob_path": stored["blob_path"],
+            "sha256": stored["sha256"],
+            "metadata": metadata,
+        }
+
+    if archive is not None and attachment_id:
+        warning = f"ChatGPT attachment {attachment_id} ({filename}) was referenced but the file was not bundled in the export."
+        if warning not in warnings:
+            warnings.append(warning)
+
+    metadata["missing_blob"] = True
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "blob_path": None,
+        "sha256": None,
+        "metadata": metadata,
+    }
+
+
+def find_chatgpt_attachment_path(attachment_id: str, filename: str, attachment_lookup: dict[str, str]) -> str | None:
+    basename_candidates: list[str] = []
+    if attachment_id and filename:
+        basename_candidates.append(f"{attachment_id}-{filename}")
+    if filename:
+        basename_candidates.append(filename)
+    if attachment_id:
+        basename_candidates.append(attachment_id)
+
+    for candidate in basename_candidates:
+        path = attachment_lookup.get(candidate)
+        if path:
+            return path
+
+    if attachment_id:
+        prefix = f"{attachment_id}-"
+        for basename, path in attachment_lookup.items():
+            if basename.startswith(prefix):
+                return path
+    if filename:
+        suffix = f"-{filename}"
+        for basename, path in attachment_lookup.items():
+            if basename == filename or basename.endswith(suffix):
+                return path
+    return None
+
+
+def register_chatgpt_source(source: dict[str, Any], sources: list[dict[str, Any]], seen: set[tuple[str, str]]) -> None:
+    key = (str(source.get("kind") or ""), str(source.get("relative_path") or ""))
+    if not key[0] or not key[1] or key in seen:
+        return
+    seen.add(key)
+    sources.append(source)
+
+
+def chatgpt_author_name(author: Any) -> str | None:
+    if not isinstance(author, dict):
+        return None
+    name = str(author.get("name") or "").strip()
+    if name:
+        return name
+    role = normalize_role(author.get("role"))
+    if role == "user":
+        return "You"
+    if role == "assistant":
+        return "ChatGPT"
+    return None
+
+
+def flatten_chatgpt_content(content: Any) -> str:
+    if not isinstance(content, dict):
+        return flatten_text(content)
+
+    content_type = str(content.get("content_type") or "").strip().lower()
+    if content_type in {"text", "multimodal_text"}:
+        parts = content.get("parts")
+        if isinstance(parts, list):
+            rendered = [render_chatgpt_content_part(part).strip() for part in parts]
+            return "\n\n".join(part for part in rendered if part)
+    if content_type in {"code", "execution_output"}:
+        return flatten_text(content.get("text") or content.get("result") or content.get("content") or content.get("parts"))
+    if content_type == "tether_browsing_display":
+        return flatten_text(content.get("summary") or content.get("result") or content.get("content"))
+    if content_type == "tether_quote":
+        return flatten_text(content.get("text") or content.get("title") or content.get("content") or content.get("parts"))
+    if content_type == "system_error":
+        return flatten_text(content.get("text") or content.get("name") or content.get("content"))
+    return flatten_text(content)
+
+
+def render_chatgpt_content_part(part: Any) -> str:
+    if isinstance(part, str):
+        return part
+    if not isinstance(part, dict):
+        return flatten_text(part)
+
+    part_type = str(part.get("content_type") or "").strip().lower()
+    if part_type.endswith("asset_pointer"):
+        return ""
+    for key in ("text", "caption", "summary", "title"):
+        value = part.get(key)
+        if value not in (None, ""):
+            return flatten_text(value)
+    if "parts" in part:
+        return flatten_text(part.get("parts"))
+    return ""
 
 
 def load_claude_conversations(export_path: Path) -> Any:
@@ -1727,19 +2014,19 @@ def claude_author_name(sender: Any) -> str | None:
 def flatten_claude_message(message: dict[str, Any]) -> str:
     raw_blocks = message.get("content")
     blocks: list[Any] = raw_blocks if isinstance(raw_blocks, list) else []
-    message_text = str(message.get("text") or "").strip()
     parts: list[str] = []
 
-    if message_text:
-        parts.append(message_text)
-
-    include_text_blocks = not message_text
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        rendered = render_claude_block(block, include_text=include_text_blocks)
-        if rendered:
-            parts.append(rendered)
+    if blocks:
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            rendered = render_claude_block(block, include_text=True)
+            if rendered:
+                parts.append(rendered)
+    else:
+        message_text = str(message.get("text") or "").strip()
+        if message_text:
+            parts.append(message_text)
 
     if not parts:
         attachment_lines = format_attachment_lines(extract_claude_attachments(message))
@@ -1777,6 +2064,35 @@ def render_claude_block(block: dict[str, Any], *, include_text: bool) -> str:
     if block_type in {"thinking", "token_budget"}:
         return ""
     return flatten_text(block).strip()
+
+
+def extract_claude_thinking_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_blocks = message.get("content")
+    blocks: list[Any] = raw_blocks if isinstance(raw_blocks, list) else []
+    thoughts: list[dict[str, Any]] = []
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").strip().lower()
+        if block_type != "thinking":
+            continue
+        text = str(block.get("thinking") or "").strip()
+        if not text:
+            continue
+        thoughts.append(
+            {
+                "text": text,
+                "created_at": iso_timestamp(block.get("start_timestamp") or block.get("stop_timestamp")),
+                "summaries": [
+                    str(summary.get("summary") or "").strip()
+                    for summary in block.get("summaries") or []
+                    if isinstance(summary, dict) and str(summary.get("summary") or "").strip()
+                ],
+            }
+        )
+
+    return thoughts
 
 
 def extract_claude_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:

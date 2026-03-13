@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from .adapters import ImportParseError, derive_kimi_model, fallback_assistant_model, parse_export
+from .adapters import ImportParseError, derive_kimi_model, fallback_assistant_model, flatten_claude_message, parse_export
 from .db import (
     BLOBS_DIR,
     RAW_DIR,
@@ -63,6 +63,7 @@ class ChangePasswordPayload(BaseModel):
 def startup() -> None:
     init_db()
     backfill_message_models()
+    backfill_claude_message_text()
 
 
 def json_or_none(value: str | None) -> object:
@@ -99,6 +100,42 @@ def backfill_message_models() -> None:
             conn.commit()
 
 
+def backfill_claude_message_text() -> None:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT m.id, m.text, m.content_json, m.metadata_json
+            FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE c.provider = 'claude'
+            """
+        ).fetchall()
+
+        message_updates: list[tuple[str, str, int]] = []
+        fts_updates: list[tuple[str, int]] = []
+        for row in rows:
+            content = json_or_none(row["content_json"])
+            metadata = json_or_none(row["metadata_json"])
+            content_dict = content if isinstance(content, dict) else {}
+            metadata_dict = metadata if isinstance(metadata, dict) else {}
+
+            visible_text = derive_claude_visible_text(content_dict)
+            normalized_metadata = normalize_claude_metadata(metadata_dict, content_dict)
+            metadata_json = dumps_json(normalized_metadata)
+
+            if row["text"] != visible_text or row["metadata_json"] != metadata_json:
+                message_updates.append((visible_text, metadata_json, int(row["id"])))
+            if row["text"] != visible_text:
+                fts_updates.append((visible_text, int(row["id"])))
+
+        if message_updates:
+            conn.executemany("UPDATE messages SET text = ?, metadata_json = ? WHERE id = ?", message_updates)
+        if fts_updates:
+            conn.executemany("UPDATE messages_fts SET text = ? WHERE rowid = ?", fts_updates)
+        if message_updates or fts_updates:
+            conn.commit()
+
+
 def derive_missing_message_model(provider: str, role: str, content_json: str | None, metadata_json: str | None) -> str | None:
     if role != "assistant":
         return None
@@ -113,6 +150,46 @@ def derive_missing_message_model(provider: str, role: str, content_json: str | N
     if provider == "kimi":
         return derive_kimi_model(content_dict, metadata_dict, role, content_dict)
     return None
+
+
+def derive_claude_visible_text(content: dict[str, Any]) -> str:
+    if not content:
+        return ""
+    return flatten_claude_message(
+        {
+            "text": content.get("text"),
+            "content": content.get("blocks") or [],
+        }
+    )
+
+
+def normalize_claude_metadata(metadata: dict[str, Any], content: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(metadata)
+    existing = normalized.get("thinking")
+    if not isinstance(existing, list) or not existing:
+        thoughts: list[dict[str, Any]] = []
+        for block in content.get("blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip().lower() != "thinking":
+                continue
+            text = str(block.get("thinking") or "").strip()
+            if not text:
+                continue
+            thoughts.append(
+                {
+                    "text": text,
+                    "created_at": block.get("start_timestamp") or block.get("stop_timestamp"),
+                    "summaries": [
+                        str(summary.get("summary") or "").strip()
+                        for summary in block.get("summaries") or []
+                        if isinstance(summary, dict) and str(summary.get("summary") or "").strip()
+                    ],
+                }
+            )
+        if thoughts:
+            normalized["thinking"] = thoughts
+    return normalized
 
 
 def sanitize_filename(name: str) -> str:
@@ -908,7 +985,7 @@ def providers(request: Request) -> dict:
     require_auth(request)
     return {
         "items": [
-            {"provider": "chatgpt", "parser_version": "chatgpt:v1"},
+            {"provider": "chatgpt", "parser_version": "chatgpt:v2"},
             {"provider": "gemini", "parser_version": "gemini:v1"},
             {"provider": "claude", "parser_version": "claude:v1"},
             {"provider": "kimi", "parser_version": "kimi:v1"},

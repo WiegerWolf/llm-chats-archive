@@ -49,7 +49,7 @@ The app is served on `http://localhost:8080` by default. Persistent data is stor
 
 ## Supported imports in this MVP
 
-- ChatGPT exports containing `conversations.json`
+- ChatGPT exports containing `conversations.json` directly or via sharded `conversations-*.json` files referenced by `export_manifest.json`
 - Claude exports from Anthropic containing `users.json`, `projects.json`, and `conversations.json`
 - Gemini-style JSON exports where conversation/message structure can be inferred from JSON files
 - Google AI Studio exports containing structured conversation files plus companion assets inside the exported zip

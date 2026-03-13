@@ -45,6 +45,7 @@ export type ConversationMessage = {
   created_at?: string | null
   sequence: number
   text: string
+  content?: Record<string, unknown> | null
   metadata?: Record<string, unknown> | null
   attachments: ConversationAttachment[]
 }
