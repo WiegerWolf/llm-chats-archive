@@ -26,10 +26,29 @@ function MarkdownContent({ text, highlightQuery = '', className }: { text: strin
         if (segment.kind === 'mermaid') {
           return <MermaidDiagram key={`mermaid-${index}`} code={segment.code} />
         }
+        if (segment.kind === 'writing') {
+          return <WritingCard key={`writing-${index}`} block={segment.block} />
+        }
         const html = renderMarkdown(segment.text)
         const highlighted = highlightQuery ? highlightHtml(html, highlightQuery) : html
         return <div key={`html-${index}`} dangerouslySetInnerHTML={{ __html: highlighted }} />
       })}
+    </div>
+  )
+}
+
+function WritingCard({ block }: { block: WritingBlock }) {
+  return (
+    <div className="my-3 overflow-hidden rounded-lg border border-sky-200 bg-sky-50/60">
+      <div className="flex items-center justify-between gap-3 border-b border-sky-200 bg-sky-100/70 px-4 py-2">
+        <div>
+          <p className="text-2xs font-semibold uppercase tracking-[0.14em] text-sky-700">Draft {block.variant || 'writing'}</p>
+          {block.subject && <p className="mt-0.5 text-sm font-medium text-sky-950">{block.subject}</p>}
+        </div>
+      </div>
+      <div className="whitespace-pre-wrap break-words bg-white px-4 py-4 font-serif text-[0.95rem] leading-7 text-zinc-800">
+          {block.body}
+      </div>
     </div>
   )
 }
@@ -51,9 +70,19 @@ function MermaidDiagram({ code }: { code: string }) {
         fontFamily: 'ui-sans-serif, system-ui, sans-serif',
       })
       let lastError: unknown = null
+      let renderableCode: string | null = null
       for (let index = 0; index < candidateCodes.length; index += 1) {
         try {
-          const rendered = await mermaid.render(`diagram-${id}-${index}`, candidateCodes[index])
+          await mermaid.parse(candidateCodes[index], { suppressErrors: false })
+          renderableCode = candidateCodes[index]
+          break
+        } catch (err) {
+          lastError = err
+        }
+      }
+      if (renderableCode) {
+        try {
+          const rendered = await mermaid.render(`diagram-${id}`, renderableCode)
           if (!cancelled) {
             setSvg(rendered.svg)
             setError('')
@@ -100,10 +129,18 @@ function MermaidDiagram({ code }: { code: string }) {
 type MarkdownSegment =
   | { kind: 'html'; text: string }
   | { kind: 'mermaid'; code: string }
+  | { kind: 'writing'; block: WritingBlock }
+
+type WritingBlock = {
+  id?: string
+  variant?: string
+  subject?: string
+  body: string
+}
 
 function parseMarkdownSegments(text: string): MarkdownSegment[] {
   const normalized = normalizeMermaidMarkdown(text)
-  const pattern = /```mermaid\s*\n([\s\S]*?)```/g
+  const pattern = /```mermaid\s*\n([\s\S]*?)```|:::writing\{([^}]*)\}\n([\s\S]*?)\n:::/g
   const segments: MarkdownSegment[] = []
   let lastIndex = 0
 
@@ -111,14 +148,42 @@ function parseMarkdownSegments(text: string): MarkdownSegment[] {
     const index = match.index ?? 0
     const before = normalized.slice(lastIndex, index)
     if (before.trim()) segments.push({ kind: 'html', text: before })
-    const code = (match[1] || '').trim()
-    if (code) segments.push({ kind: 'mermaid', code })
+    const mermaidCode = (match[1] || '').trim()
+    if (mermaidCode) {
+      segments.push({ kind: 'mermaid', code: mermaidCode })
+    } else {
+      const writing = parseWritingBlock(match[2] || '', match[3] || '')
+      if (writing) segments.push({ kind: 'writing', block: writing })
+    }
     lastIndex = index + match[0].length
   }
 
   const tail = normalized.slice(lastIndex)
   if (tail.trim() || segments.length === 0) segments.push({ kind: 'html', text: tail || text })
   return segments
+}
+
+function parseWritingBlock(rawAttrs: string, rawBody: string): WritingBlock | null {
+  const attrs = parseWritingAttributes(rawAttrs)
+  const body = rawBody.trim()
+  if (!body) return null
+  return {
+    id: attrs.id,
+    variant: attrs.variant,
+    subject: attrs.subject,
+    body,
+  }
+}
+
+function parseWritingAttributes(rawAttrs: string): Record<string, string> {
+  const attrs: Record<string, string> = {}
+  const pattern = /(\w+)="([^"]*)"|(\w+)=\"([^\"]*)\"|(\w+)=([^\s]+)/g
+  for (const match of rawAttrs.matchAll(pattern)) {
+    const key = match[1] || match[3] || match[5]
+    const value = match[2] || match[4] || match[6] || ''
+    if (key) attrs[key] = value
+  }
+  return attrs
 }
 
 function normalizeMermaidMarkdown(text: string): string {
