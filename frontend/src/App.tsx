@@ -298,13 +298,14 @@ function formatDateShort(value?: string | null): string {
 
 // ── Shared tiny components ──
 
-function Badge({ children, variant = 'default', className }: { children: React.ReactNode; variant?: 'default' | 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'googleaistudio' | 'completed' | 'failed' | 'processing' | 'queued'; className?: string }) {
+function Badge({ children, variant = 'default', className }: { children: React.ReactNode; variant?: 'default' | 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'pi' | 'googleaistudio' | 'completed' | 'failed' | 'processing' | 'queued'; className?: string }) {
   const styles: Record<string, string> = {
     default: 'bg-zinc-100 text-zinc-600',
     chatgpt: 'bg-emerald-50 text-emerald-700',
     claude: 'bg-pink-50 text-pink-700',
     gemini: 'bg-blue-50 text-blue-700',
     kimi: 'bg-violet-50 text-violet-700',
+    pi: 'bg-cyan-50 text-cyan-700',
     googleaistudio: 'bg-amber-50 text-amber-700',
     completed: 'bg-emerald-50 text-emerald-600',
     failed: 'bg-red-50 text-red-600',
@@ -320,7 +321,7 @@ function Badge({ children, variant = 'default', className }: { children: React.R
 
 function ProviderBadge({ provider }: { provider: string }) {
   const p = provider.toLowerCase()
-  let variant: 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'googleaistudio' | 'default' = 'default'
+  let variant: 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'pi' | 'googleaistudio' | 'default' = 'default'
   let label = provider
   if (p.includes('chatgpt') || p.includes('openai')) variant = 'chatgpt'
   else if (p.includes('claude') || p.includes('anthropic')) variant = 'claude'
@@ -330,6 +331,7 @@ function ProviderBadge({ provider }: { provider: string }) {
   }
   else if (p.includes('gemini') || p.includes('google')) variant = 'gemini'
   else if (p.includes('kimi') || p.includes('moonshot')) variant = 'kimi'
+  else if (p === 'pi' || p.includes('pi.ai')) { variant = 'pi'; label = 'Pi' }
   return <Badge variant={variant}>{label}</Badge>
 }
 
@@ -580,7 +582,7 @@ function StatsPage() {
         <div className="flex flex-col items-center gap-3 py-16 border-2 border-dashed border-zinc-200 rounded-lg text-center">
           <Upload className="w-8 h-8 text-zinc-300" />
           <h3 className="text-base font-semibold">No data yet</h3>
-          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT export (single-file or sharded), Claude, Gemini, Google AI Studio, or Kimi bundle to start browsing your conversations.</p>
+          <p className="text-[0.8125rem] text-zinc-500 max-w-sm">Upload a ChatGPT export (single-file or sharded), Claude, Gemini, Google AI Studio, Kimi bundle, or Pi history JSON to start browsing your conversations.</p>
           <Btn onClick={() => navigate('/imports')}>Go to Imports</Btn>
         </div>
       </PageShell>
@@ -710,7 +712,7 @@ function ImportsPage() {
           <label className="flex flex-col items-center gap-2 cursor-pointer">
             <ArrowUpFromLine className="w-6 h-6 text-zinc-400" />
             <span className="text-sm font-medium">{selectedFile ? selectedFile.name : 'Drop file here or click to browse'}</span>
-            <span className="text-xs text-zinc-400">ChatGPT single-file and sharded exports, Claude, Gemini, Google AI Studio, and Kimi bundles supported</span>
+            <span className="text-xs text-zinc-400">ChatGPT single-file and sharded exports, Claude, Gemini, Google AI Studio, Kimi bundles, and Pi history JSON supported</span>
             <input type="file" accept=".zip,.json" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} className="text-xs text-zinc-400 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-zinc-200 file:bg-white file:text-zinc-600 file:font-medium file:text-xs file:cursor-pointer" />
           </label>
           <div className="flex items-center gap-3 mt-3 justify-center">
@@ -806,7 +808,7 @@ function ConversationsPage() {
     setSearchParams(params, { replace: true })
   }
 
-  const knownProviders = ['chatgpt', 'claude', 'gemini', 'googleaistudio', 'kimi'] as const
+  const knownProviders = ['chatgpt', 'claude', 'gemini', 'googleaistudio', 'kimi', 'pi'] as const
   const providerOptions = [
     ...knownProviders.filter((item) => providerCounts[item] != null),
     ...Object.keys(providerCounts)

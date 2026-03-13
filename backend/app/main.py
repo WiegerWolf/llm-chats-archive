@@ -989,6 +989,7 @@ def providers(request: Request) -> dict:
             {"provider": "gemini", "parser_version": "gemini:v1"},
             {"provider": "claude", "parser_version": "claude:v1"},
             {"provider": "kimi", "parser_version": "kimi:v1"},
+            {"provider": "pi", "parser_version": "pi:v1"},
             {"provider": "googleaistudio", "parser_version": "googleaistudio:v1"},
         ]
     }

@@ -19,6 +19,8 @@ class ImportParseError(Exception):
 
 def parse_export(export_path: Path) -> dict[str, Any]:
     provider = detect_provider(export_path)
+    if provider == "pi":
+        return parse_pi_export(export_path)
     if provider == "kimi":
         return parse_kimi_capture_bundle(export_path)
     if provider == "claude":
@@ -54,6 +56,8 @@ def detect_provider(export_path: Path) -> str:
                 return "gemini"
     if export_path.suffix.lower() == ".json" or lower_name.endswith(".json"):
         document = load_json_file(export_path)
+        if looks_like_pi_export(document):
+            return "pi"
         if looks_like_kimi_capture_bundle(document):
             return "kimi"
         if looks_like_google_ai_studio_document(document):
@@ -65,6 +69,93 @@ def detect_provider(export_path: Path) -> str:
         if looks_like_gemini(document) or "gemini" in lower_name or "bard" in lower_name:
             return "gemini"
     return "unknown"
+
+
+def parse_pi_export(export_path: Path) -> dict[str, Any]:
+    payload = load_json_file(export_path)
+    if not looks_like_pi_export(payload):
+        raise ImportParseError("Pi export did not contain a recognizable user history document.")
+
+    user_data = payload.get("user_data") or {}
+    details = user_data.get("details") or {}
+    raw_messages = user_data.get("messages") or []
+    if not isinstance(raw_messages, list):
+        raise ImportParseError("Pi export did not contain a message list.")
+
+    warnings: list[str] = []
+    messages: list[dict[str, Any]] = []
+
+    for index, raw_message in enumerate(raw_messages, start=1):
+        if not isinstance(raw_message, dict):
+            warnings.append(f"Skipped Pi message #{index}: unsupported structure.")
+            continue
+
+        text = str(raw_message.get("text") or "").strip()
+        if not text:
+            continue
+
+        sender = str(raw_message.get("sender") or "").strip()
+        role = normalize_role(sender)
+        sent_at = iso_timestamp(raw_message.get("sent_at"))
+        messages.append(
+            {
+                "provider_message_id": stable_hash(
+                    f"pi:{export_path.name}:{index}:{sender}:{raw_message.get('sent_at')}:{text}"
+                ),
+                "role": role,
+                "author_name": pi_author_name(sender),
+                "model": fallback_assistant_model("pi", role),
+                "created_at": sent_at,
+                "text": text,
+                "content": {"text": raw_message.get("text")},
+                "metadata": {
+                    "sender": sender,
+                    "channel": raw_message.get("channel"),
+                    "sent_at": sent_at,
+                },
+                "attachments": [],
+            }
+        )
+
+    messages.sort(key=lambda item: item.get("created_at") or "")
+    for sequence, message in enumerate(messages, start=1):
+        message["sequence"] = sequence
+
+    if not messages:
+        raise ImportParseError("Pi export was recognized, but no messages could be parsed.")
+
+    title = pi_conversation_title(export_path, details, messages)
+    created_at = iso_timestamp(details.get("created_at")) or messages[0].get("created_at")
+    updated_at = messages[-1].get("created_at")
+    identifiers = details.get("identifiers") if isinstance(details.get("identifiers"), list) else []
+
+    return {
+        "provider": "pi",
+        "parser_version": "pi:v1",
+        "conversations": [
+            {
+                "provider": "pi",
+                "provider_conversation_id": stable_hash(f"pi:{export_path.name}:{created_at}:{len(messages)}"),
+                "title": title,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "metadata": {
+                    "first_name": details.get("first_name"),
+                    "entry_channel": details.get("entry_channel"),
+                    "identifiers": identifiers,
+                    "source": "pi",
+                    "source_file": export_path.name,
+                },
+                "messages": messages,
+            }
+        ],
+        "warnings": warnings,
+        "summary": {
+            "conversation_count": 1,
+            "message_count": len(messages),
+            "attachment_count": 0,
+        },
+    }
 
 
 def parse_google_ai_studio_export(export_path: Path) -> dict[str, Any]:
@@ -1459,6 +1550,17 @@ def looks_like_kimi_capture_bundle(document: Any) -> bool:
     )
 
 
+def looks_like_pi_export(document: Any) -> bool:
+    if not isinstance(document, dict):
+        return False
+    user_data = document.get("user_data")
+    if not isinstance(user_data, dict):
+        return False
+    details = user_data.get("details")
+    messages = user_data.get("messages")
+    return isinstance(details, dict) and isinstance(messages, list)
+
+
 def build_kimi_history_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     index: dict[str, dict[str, Any]] = {}
     history_groups = payload.get("history_groups")
@@ -1967,8 +2069,33 @@ def fallback_assistant_model(provider: str, role: str) -> str | None:
     labels = {
         "claude": "Claude (model unavailable)",
         "kimi": "Kimi (model unavailable)",
+        "pi": "Pi (model unavailable)",
     }
     return labels.get(provider)
+
+
+def pi_author_name(sender: Any) -> str | None:
+    role = normalize_role(sender)
+    if role == "user":
+        return "You"
+    if role == "assistant":
+        return "Pi"
+    return None
+
+
+def pi_conversation_title(export_path: Path, details: dict[str, Any], messages: list[dict[str, Any]]) -> str:
+    first_name = str(details.get("first_name") or "").strip()
+    if first_name and first_name != "_":
+        return f"Pi chat with {first_name}"
+
+    first_user_message = next((item for item in messages if item.get("role") == "user" and item.get("text")), None)
+    if first_user_message:
+        text = str(first_user_message.get("text") or "").strip()
+        compact = re.sub(r"\s+", " ", text)
+        if compact:
+            return compact[:80]
+
+    return title_from_filename(export_path.name)
 
 
 def derive_kimi_model(
@@ -2263,7 +2390,7 @@ def normalize_role(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text in {"user", "human", "prompt", "customer"}:
         return "user"
-    if text in {"assistant", "model", "gemini", "bard", "bot", "chatgpt"}:
+    if text in {"assistant", "model", "gemini", "bard", "bot", "chatgpt", "ai"}:
         return "assistant"
     if text in {"system", "developer"}:
         return "system"

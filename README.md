@@ -10,7 +10,7 @@ Self-hosted single-user archive for AI chat exports. It uses a React SPA, a Fast
 - normalized archive for conversations and messages
 - full-text search across imported chats
 - archive-style conversation viewer with provenance metadata
-- initial adapters for ChatGPT, Claude, Gemini, Google AI Studio, and Kimi capture bundles
+- initial adapters for ChatGPT, Claude, Gemini, Google AI Studio, Kimi capture bundles, and Pi exports
 
 ## Project layout
 
@@ -54,6 +54,7 @@ The app is served on `http://localhost:8080` by default. Persistent data is stor
 - Gemini-style JSON exports where conversation/message structure can be inferred from JSON files
 - Google AI Studio exports containing structured conversation files plus companion assets inside the exported zip
 - Kimi browser capture bundles created by `scripts/kimi-export.user.js`
+- Pi history JSON exports containing `user_data.details` and `user_data.messages`
 
 The importer preserves the original uploaded file, normalizes supported conversations/messages into SQLite, and keeps warnings for anything it cannot parse cleanly.
 
