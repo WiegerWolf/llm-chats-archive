@@ -63,4 +63,8 @@
   .markdown-body table { @apply border-collapse my-2 text-[0.8125em] w-full; }
   .markdown-body th, .markdown-body td { @apply border border-zinc-200 px-2 py-1.5 text-left; }
   .markdown-body th { @apply bg-zinc-50 font-semibold; }
+
+  .mermaid-diagram svg {
+    @apply h-auto max-w-full;
+  }
 }

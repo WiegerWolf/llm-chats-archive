@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { marked } from 'marked'
 import {
@@ -15,6 +15,186 @@ marked.setOptions({ gfm: true, breaks: true })
 
 function renderMarkdown(text: string): string {
   return marked.parse(text, { async: false }) as string
+}
+
+function MarkdownContent({ text, highlightQuery = '', className }: { text: string; highlightQuery?: string; className?: string }) {
+  const segments = parseMarkdownSegments(text)
+
+  return (
+    <div className={cn('markdown-body', className)}>
+      {segments.map((segment, index) => {
+        if (segment.kind === 'mermaid') {
+          return <MermaidDiagram key={`mermaid-${index}`} code={segment.code} />
+        }
+        const html = renderMarkdown(segment.text)
+        const highlighted = highlightQuery ? highlightHtml(html, highlightQuery) : html
+        return <div key={`html-${index}`} dangerouslySetInnerHTML={{ __html: highlighted }} />
+      })}
+    </div>
+  )
+}
+
+function MermaidDiagram({ code }: { code: string }) {
+  const id = useId().replace(/:/g, '-')
+  const [svg, setSvg] = useState('')
+  const [error, setError] = useState('')
+  const candidateCodes = useMemo(() => buildMermaidCandidates(code), [code])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void import('mermaid').then(async ({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'neutral',
+        securityLevel: 'strict',
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      })
+      let lastError: unknown = null
+      for (let index = 0; index < candidateCodes.length; index += 1) {
+        try {
+          const rendered = await mermaid.render(`diagram-${id}-${index}`, candidateCodes[index])
+          if (!cancelled) {
+            setSvg(rendered.svg)
+            setError('')
+          }
+          return
+        } catch (err) {
+          lastError = err
+        }
+      }
+      if (!cancelled) {
+        setSvg('')
+        setError(lastError instanceof Error ? lastError.message : 'Could not render diagram.')
+      }
+    }).catch((err) => {
+      if (!cancelled) {
+        setSvg('')
+        setError(err instanceof Error ? err.message : 'Could not load diagram renderer.')
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [candidateCodes, id])
+
+  if (error) {
+    return (
+      <div className="my-3 rounded-md border border-amber-200 bg-amber-50 p-3">
+        <p className="mb-2 text-xs font-medium text-amber-700">Could not render flowchart</p>
+        <pre className="overflow-x-auto rounded-md border border-amber-200 bg-white px-3 py-2 text-xs text-zinc-700"><code>{code}</code></pre>
+      </div>
+    )
+  }
+
+  if (!svg) {
+    return <div className="my-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-6 text-center text-xs text-zinc-400">Rendering flowchart...</div>
+  }
+
+  return (
+    <div className="mermaid-diagram my-3 overflow-x-auto rounded-md border border-zinc-200 bg-white p-3" dangerouslySetInnerHTML={{ __html: svg }} />
+  )
+}
+
+type MarkdownSegment =
+  | { kind: 'html'; text: string }
+  | { kind: 'mermaid'; code: string }
+
+function parseMarkdownSegments(text: string): MarkdownSegment[] {
+  const normalized = normalizeMermaidMarkdown(text)
+  const pattern = /```mermaid\s*\n([\s\S]*?)```/g
+  const segments: MarkdownSegment[] = []
+  let lastIndex = 0
+
+  for (const match of normalized.matchAll(pattern)) {
+    const index = match.index ?? 0
+    const before = normalized.slice(lastIndex, index)
+    if (before.trim()) segments.push({ kind: 'html', text: before })
+    const code = (match[1] || '').trim()
+    if (code) segments.push({ kind: 'mermaid', code })
+    lastIndex = index + match[0].length
+  }
+
+  const tail = normalized.slice(lastIndex)
+  if (tail.trim() || segments.length === 0) segments.push({ kind: 'html', text: tail || text })
+  return segments
+}
+
+function normalizeMermaidMarkdown(text: string): string {
+  const lines = text.split('\n')
+  const output: string[] = []
+  let index = 0
+  let inFence = false
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const trimmed = line.trim()
+    if (trimmed.startsWith('```')) {
+      inFence = !inFence
+      output.push(line)
+      index += 1
+      continue
+    }
+
+    if (!inFence && isMermaidStart(trimmed)) {
+      const block: string[] = [trimmed]
+      index += 1
+      while (index < lines.length) {
+        const nextLine = lines[index]
+        if (!nextLine.trim()) break
+        block.push(nextLine)
+        index += 1
+      }
+      output.push('```mermaid', ...block, '```')
+      continue
+    }
+
+    output.push(line)
+    index += 1
+  }
+
+  return output.join('\n')
+}
+
+function isMermaidStart(line: string): boolean {
+  return /^(flowchart|graph|sequenceDiagram|classDiagram|erDiagram|journey|gantt|mindmap|timeline|stateDiagram(?:-v2)?|gitGraph|pie|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment)\b/.test(line)
+}
+
+function sanitizeMermaidCode(code: string): string {
+  const normalized = code
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+
+  const stripQuotes = (value: string) => value.replace(/["']/g, '')
+
+  return normalized
+    .replace(/\[([^\]]*?)\]/g, (_, label: string) => `[${stripQuotes(label)}]`)
+    .replace(/\{([^{}]*?)\}/g, (_, label: string) => `{${stripQuotes(label)}}`)
+}
+
+function aggressivelySanitizeMermaidCode(code: string): string {
+  const simplify = (value: string) => value
+    .replace(/["']/g, '')
+    .replace(/[()]/g, '')
+    .replace(/[?]/g, '')
+    .replace(/[+]/g, ' plus ')
+    .replace(/[/:,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return sanitizeMermaidCode(code)
+    .replace(/\[([^\]]*?)\]/g, (_, label: string) => `[${simplify(label)}]`)
+    .replace(/\{([^{}]*?)\}/g, (_, label: string) => `{${simplify(label)}}`)
+    .replace(/\|([^|]*?)\|/g, (_, label: string) => `|${simplify(label)}|`)
+}
+
+function buildMermaidCandidates(code: string): string[] {
+  return Array.from(new Set([
+    code,
+    sanitizeMermaidCode(code),
+    aggressivelySanitizeMermaidCode(code),
+  ]))
 }
 
 // ── Time helpers ──
@@ -688,8 +868,6 @@ function ConversationDetailPage() {
 
 function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messages'][0]; highlightQuery: string }) {
   const presentation = getMessagePresentation(msg)
-  const html = presentation.kind === 'markdown' ? renderMarkdown(presentation.text) : ''
-  const highlighted = highlightQuery && html ? highlightHtml(html, highlightQuery) : html
   const research = getKimiResearchData(msg.metadata)
   const thinking = getClaudeThinkingData(msg)
   const showBody = presentation.kind === 'code' || presentation.text.trim().length > 0
@@ -704,7 +882,7 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
         </span>
       </div>
       {showBody && (presentation.kind === 'markdown' ? (
-        <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlighted }} />
+        <MarkdownContent text={presentation.text} highlightQuery={highlightQuery} className="text-[0.8125rem] leading-relaxed break-words" />
       ) : (
         <div className="space-y-2">
           {presentation.title && <p className="text-2xs font-semibold uppercase tracking-wider text-zinc-400">{presentation.title}</p>}
@@ -735,11 +913,9 @@ function ThinkingBlock({ thoughts, highlightQuery }: { thoughts: ClaudeThinkingE
       <summary className="cursor-pointer list-none px-3 py-2 text-[0.8125rem] font-medium text-zinc-700">Thinking</summary>
       <div className="space-y-2 border-t border-zinc-200 p-3">
         {thoughts.map((thought, index) => {
-          const thoughtHtml = renderMarkdown(thought.text)
-          const highlightedThought = highlightQuery ? highlightHtml(thoughtHtml, highlightQuery) : thoughtHtml
           return (
             <div key={`${thought.created_at || 'thought'}-${index}`} className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
-              <div className="markdown-body text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlightedThought }} />
+              <MarkdownContent text={thought.text} highlightQuery={highlightQuery} className="text-[0.8125rem] leading-relaxed break-words" />
               {thought.summaries.length > 0 && <p className="mt-2 text-2xs text-zinc-500">{thought.summaries.join(' · ')}</p>}
             </div>
           )
@@ -750,9 +926,6 @@ function ThinkingBlock({ thoughts, highlightQuery }: { thoughts: ClaudeThinkingE
 }
 
 function KimiResearchBlock({ data, highlightQuery }: { data: KimiResearchData; highlightQuery: string }) {
-  const reportHtml = data.markdownArtifact?.content ? renderMarkdown(data.markdownArtifact.content) : ''
-  const highlightedReport = reportHtml && highlightQuery ? highlightHtml(reportHtml, highlightQuery) : reportHtml
-
   return (
     <div className="mt-4 space-y-4 border-t border-zinc-200 pt-4">
       {data.thoughts.length > 0 && (
@@ -788,10 +961,10 @@ function KimiResearchBlock({ data, highlightQuery }: { data: KimiResearchData; h
       {(data.markdownArtifact || data.htmlArtifact) && (
         <SectionCard title="Generated Report" icon={<FileText className="w-3.5 h-3.5" />}>
           <div className="space-y-3">
-            {data.markdownArtifact && highlightedReport && (
+            {data.markdownArtifact?.content && (
               <div>
                 <p className="mb-2 text-2xs font-semibold uppercase tracking-wider text-zinc-400">Markdown Report</p>
-                <div className="markdown-body rounded-md border border-zinc-200 bg-white p-4 text-[0.8125rem] leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: highlightedReport }} />
+                <MarkdownContent text={data.markdownArtifact.content} highlightQuery={highlightQuery} className="rounded-md border border-zinc-200 bg-white p-4 text-[0.8125rem] leading-relaxed break-words" />
               </div>
             )}
             {data.htmlArtifact && (
