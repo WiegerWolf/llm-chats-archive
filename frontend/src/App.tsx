@@ -807,6 +807,12 @@ function ConversationsPage() {
   }
 
   const knownProviders = ['chatgpt', 'claude', 'gemini', 'googleaistudio', 'kimi'] as const
+  const providerOptions = [
+    ...knownProviders.filter((item) => providerCounts[item] != null),
+    ...Object.keys(providerCounts)
+      .filter((item) => !knownProviders.includes(item as typeof knownProviders[number]))
+      .sort((a, b) => a.localeCompare(b)),
+  ]
 
   return (
     <PageShell title="Conversations">
@@ -824,7 +830,7 @@ function ConversationsPage() {
 
       {/* Provider chips */}
       <div className="flex items-center gap-1.5 mb-3">
-        {knownProviders.map((p) => (
+        {providerOptions.map((p) => (
           <button
             key={p}
             type="button"
