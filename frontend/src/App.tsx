@@ -948,6 +948,20 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
       </div>
       {showBody && (presentation.kind === 'markdown' ? (
         <MarkdownContent text={presentation.text} highlightQuery={highlightQuery} className="text-[0.8125rem] leading-relaxed break-words" />
+      ) : presentation.kind === 'payload' ? (
+        <div className="space-y-2 rounded-md border border-zinc-200 bg-white px-3 py-3">
+          <div>
+            <p className="text-2xs font-semibold uppercase tracking-wider text-zinc-400">{presentation.title}</p>
+            {presentation.summary && <p className="mt-1 text-[0.8125rem] text-zinc-600">{presentation.summary}</p>}
+          </div>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-zinc-50 px-3 py-2 text-xs leading-relaxed text-zinc-700"><code>{presentation.text}</code></pre>
+          {presentation.raw && presentation.raw !== presentation.text && (
+            <details className="rounded-md border border-zinc-200 bg-white">
+              <summary className="cursor-pointer list-none px-3 py-2 text-[0.8125rem] font-medium text-zinc-700">Raw payload</summary>
+              <pre className="overflow-x-auto border-t border-zinc-200 px-3 py-2 text-xs leading-relaxed text-zinc-600"><code>{presentation.raw}</code></pre>
+            </details>
+          )}
+        </div>
       ) : (
         <div className="space-y-2">
           {presentation.title && <p className="text-2xs font-semibold uppercase tracking-wider text-zinc-400">{presentation.title}</p>}
@@ -1455,6 +1469,7 @@ type ClaudeThinkingEntry = {
 type MessagePresentation =
   | { kind: 'markdown'; text: string }
   | { kind: 'code'; text: string; title?: string; raw?: string }
+  | { kind: 'payload'; text: string; title: string; summary?: string; raw?: string }
 
 function shouldDisplayMessage(msg: ConversationDetail['messages'][0]): boolean {
   const metadata = asRecord(msg.metadata)
@@ -1511,14 +1526,46 @@ function getChatGptSpecialPayload(msg: ConversationDetail['messages'][0]): Messa
 
   const raw = asString(content?.text) || msg.text
   if (!raw) return null
+  const functionCall = parseFunctionCallPayload(raw)
+  if (functionCall) {
+    return {
+      kind: 'payload',
+      title: functionCallTitle(functionCall.name),
+      summary: functionCall.name,
+      text: functionCall.argsText,
+      raw,
+    }
+  }
   const parsed = safeParseJson(raw)
   if (!parsed) return {
     kind: 'code',
     text: raw,
-    title: asString(content?.language) ? `${asString(content?.language)} payload` : 'Code payload',
+    title: friendlyPayloadLanguage(asString(content?.language)),
   }
 
   const record = asRecord(parsed)
+  const path = asString(record?.path)
+  const args = asRecord(record?.args)
+  if (path) {
+    return {
+      kind: 'payload',
+      title: payloadTitleFromPath(path),
+      summary: path,
+      text: args ? safeJson(args) : safeJson(parsed),
+      raw,
+    }
+  }
+
+  if (record?.session_id && (record?.connector_settings || record?.custom_sources_settings || record?.file_attachments)) {
+    return {
+      kind: 'payload',
+      title: 'Tool session payload',
+      summary: 'Connector session details',
+      text: safeJson(parsed),
+      raw,
+    }
+  }
+
   const artifactContent = asString(record?.content)
   const artifactType = asString(record?.type)
   const artifactName = asString(record?.name)
@@ -1572,6 +1619,61 @@ function isChatGptBootstrapMessage(msg: ConversationDetail['messages'][0]): bool
   if ((resourceName.toLowerCase().includes('deep research') || resourceUri.toLowerCase().includes('deep_research')) && msg.role === 'assistant' && rawText.startsWith('{')) return true
   if (rawText.includes('Embedded UI description') && rawText.includes('deep research')) return true
   return false
+}
+
+function parseFunctionCallPayload(raw: string): { name: string; argsText: string } | null {
+  const match = raw.trim().match(/^([A-Za-z_][\w.]*)\(([^]*)\)$/)
+  if (!match) return null
+
+  const name = match[1]
+  const inner = match[2].trim()
+  if (!inner) return { name, argsText: '' }
+
+  try {
+    const parsed = JSON.parse(`[${inner}]`) as unknown[]
+    const argsText = parsed.length === 1
+      ? formatPayloadValue(parsed[0])
+      : parsed.map((value, index) => `arg${index + 1}: ${formatPayloadValue(value)}`).join('\n\n')
+    return { name, argsText }
+  } catch {
+    return { name, argsText: inner }
+  }
+}
+
+function formatPayloadValue(value: unknown): string {
+  if (typeof value === 'string') return value
+  return safeJson(value)
+}
+
+function functionCallTitle(name: string): string {
+  const lowered = name.toLowerCase()
+  if (lowered === 'search') return 'Search query'
+  if (lowered === 'web.run') return 'Web tool call'
+  if (lowered === 'canmore.create_textdoc') return 'Canvas draft creation'
+  return `${humanizeIdentifier(name)} call`
+}
+
+function friendlyPayloadLanguage(language: string): string {
+  const lowered = language.toLowerCase()
+  if (!lowered || lowered === 'unknown') return 'Raw payload'
+  if (lowered === 'json') return 'JSON payload'
+  return `${language} payload`
+}
+
+function payloadTitleFromPath(path: string): string {
+  const lowered = path.toLowerCase()
+  if (lowered.includes('deep research')) return 'Deep research request'
+  const parts = path.split('/').filter(Boolean)
+  const tail = parts.length > 0 ? parts[parts.length - 1] : path
+  return `${humanizeIdentifier(tail)} payload`
+}
+
+function humanizeIdentifier(value: string): string {
+  return value
+    .split(/[:./_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 function getClaudeThinkingData(msg: ConversationDetail['messages'][0]): ClaudeThinkingEntry[] {
