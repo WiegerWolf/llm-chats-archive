@@ -8,6 +8,8 @@ Built with React, FastAPI, SQLite (FTS5), and filesystem blob storage.
 
 AI chat history becomes useful only after you can actually search it, compare it, and recover it later. Provider UIs are fragmented, exports are inconsistent, and old conversations disappear into different silos. This project turns those exports into one local archive with full-text search, attachments, and a usable viewer.
 
+In practice, it gives you a way to keep your AI conversations locally searchable instead of leaving them trapped in a pile of provider-specific UIs and export formats.
+
 <br>
 
 <p align="center">
