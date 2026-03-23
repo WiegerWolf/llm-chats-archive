@@ -1,8 +1,12 @@
 # Chat Archive
 
-A self-hosted, single-user archive for your AI conversations. Browse, search, and revisit chats from ChatGPT, Claude, Gemini, Google AI Studio, Kimi, and Pi — all in one place.
+A self-hosted archive for AI conversations across ChatGPT, Claude, Gemini, Google AI Studio, Kimi, and Pi. Import your exports, search everything locally, and revisit old chats from one interface instead of leaving them scattered across providers.
 
 Built with React, FastAPI, SQLite (FTS5), and filesystem blob storage.
+
+## Why this exists
+
+AI chat history becomes useful only after you can actually search it, compare it, and recover it later. Provider UIs are fragmented, exports are inconsistent, and old conversations disappear into different silos. This project turns those exports into one local archive with full-text search, attachments, and a usable viewer.
 
 <br>
 
