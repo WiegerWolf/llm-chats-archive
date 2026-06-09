@@ -19,6 +19,8 @@ class ImportParseError(Exception):
 
 def parse_export(export_path: Path) -> dict[str, Any]:
     provider = detect_provider(export_path)
+    if provider == "lobechat":
+        return parse_lobechat_export(export_path)
     if provider == "pi":
         return parse_pi_export(export_path)
     if provider == "kimi":
@@ -37,6 +39,10 @@ def parse_export(export_path: Path) -> dict[str, Any]:
 def detect_provider(export_path: Path) -> str:
     lower_name = export_path.name.lower()
     if export_path.suffix.lower() == ".zip":
+        with ZipFile(export_path) as archive:
+            names = [name.lower() for name in archive.namelist()]
+            if any(PurePosixPath(name).name == "lobechat_export.json" for name in names):
+                return "lobechat"
         if looks_like_google_ai_studio_archive(export_path):
             return "googleaistudio"
         with ZipFile(export_path) as archive:
@@ -69,6 +75,339 @@ def detect_provider(export_path: Path) -> str:
         if looks_like_gemini(document) or "gemini" in lower_name or "bard" in lower_name:
             return "gemini"
     return "unknown"
+
+
+def parse_lobechat_export(export_path: Path) -> dict[str, Any]:
+    if export_path.suffix.lower() != ".zip":
+        raise ImportParseError("LobeChat imports must be a .zip package containing lobechat_export.json.")
+
+    with ZipFile(export_path) as archive:
+        manifest_name = next(
+            (name for name in archive.namelist() if PurePosixPath(name).name.lower() == "lobechat_export.json"),
+            None,
+        )
+        if not manifest_name:
+            raise ImportParseError("LobeChat package did not contain lobechat_export.json.")
+        manifest = json.loads(archive.read(manifest_name).decode("utf-8"))
+        return normalize_lobechat_manifest(manifest, archive, export_path.name)
+
+
+def normalize_lobechat_manifest(manifest: Any, archive: ZipFile, source_name: str) -> dict[str, Any]:
+    if not isinstance(manifest, dict):
+        raise ImportParseError("LobeChat manifest was not a JSON object.")
+    if manifest.get("format") != "lobechat-user-export":
+        raise ImportParseError("LobeChat manifest had an unsupported format.")
+
+    rows = manifest.get("rows") or {}
+    if not isinstance(rows, dict):
+        raise ImportParseError("LobeChat manifest did not contain row data.")
+
+    user_id = str(manifest.get("user_id") or "").strip()
+    if not user_id:
+        raise ImportParseError("LobeChat manifest did not specify a user_id.")
+
+    user_rows = [row for row in rows.get("users") or [] if isinstance(row, dict)]
+    user_row = next((row for row in user_rows if row.get("id") == user_id), user_rows[0] if user_rows else {})
+    username = str(user_row.get("username") or user_row.get("email") or user_id).strip()
+
+    sessions_by_id = {
+        str(row.get("id")): row
+        for row in rows.get("sessions") or []
+        if isinstance(row, dict) and row.get("id")
+    }
+    topics = [row for row in rows.get("topics") or [] if isinstance(row, dict) and row.get("id")]
+    topics_by_id = {str(row["id"]): row for row in topics}
+    messages = [
+        row
+        for row in rows.get("messages") or []
+        if isinstance(row, dict) and row.get("topic_id") in topics_by_id
+    ]
+    files_by_id = {
+        str(row.get("id")): row
+        for row in rows.get("files") or []
+        if isinstance(row, dict) and row.get("id")
+    }
+    documents_by_file_id = {
+        str(row.get("file_id")): row
+        for row in rows.get("documents") or []
+        if isinstance(row, dict) and row.get("file_id")
+    }
+
+    blob_paths = manifest.get("blob_paths") or {}
+    if not isinstance(blob_paths, dict):
+        blob_paths = {}
+
+    messages_by_topic: dict[str, list[dict[str, Any]]] = {}
+    for row in messages:
+        topic_id = str(row.get("topic_id") or "")
+        messages_by_topic.setdefault(topic_id, []).append(row)
+
+    attachments_by_message: dict[str, list[dict[str, Any]]] = {}
+    for row in rows.get("messages_files") or []:
+        if not isinstance(row, dict):
+            continue
+        message_id = str(row.get("message_id") or "")
+        file_id = str(row.get("file_id") or "")
+        file_row = files_by_id.get(file_id)
+        if not message_id or not file_row:
+            continue
+        attachments_by_message.setdefault(message_id, []).append(file_row)
+
+    sources: list[dict[str, Any]] = []
+    source_paths: set[tuple[str, str]] = set()
+    warnings: list[str] = []
+    normalized: list[dict[str, Any]] = []
+    message_total = 0
+    attachment_total = 0
+    missing_blobs = 0
+
+    for topic_messages in messages_by_topic.values():
+        topic_messages.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")))
+
+    for topic in sorted(topics, key=lambda row: (str(row.get("created_at") or ""), str(row.get("updated_at") or ""), str(row.get("id") or ""))):
+        topic_id = str(topic.get("id") or "")
+        topic_messages = messages_by_topic.get(topic_id) or []
+        if not topic_messages:
+            continue
+
+        session = sessions_by_id.get(str(topic.get("session_id") or ""))
+        title = str(topic.get("title") or "").strip() or str((session or {}).get("title") or "").strip() or "Untitled LobeChat conversation"
+        normalized_messages: list[dict[str, Any]] = []
+
+        for sequence, raw_message in enumerate(topic_messages, start=1):
+            attachments: list[dict[str, Any]] = []
+            for file_row in attachments_by_message.get(str(raw_message.get("id") or ""), []):
+                file_id = str(file_row.get("id") or "")
+                attachment, missing_blob = normalize_lobechat_attachment(
+                    archive,
+                    file_row,
+                    documents_by_file_id.get(file_id),
+                    blob_paths,
+                    sources,
+                    source_paths,
+                )
+                if missing_blob:
+                    missing_blobs += 1
+                attachments.append(attachment)
+
+            text = str(raw_message.get("content") or "").strip()
+            normalized_messages.append(
+                {
+                    "provider_message_id": raw_message.get("id"),
+                    "role": normalize_role(raw_message.get("role")),
+                    "author_name": lobechat_author_name(raw_message.get("role")),
+                    "model": raw_message.get("model"),
+                    "created_at": iso_timestamp(raw_message.get("created_at")),
+                    "sequence": sequence,
+                    "text": text or format_attachment_lines(attachments),
+                    "content": {
+                        "text": raw_message.get("content"),
+                        "source": "lobechat",
+                        "lobe": {
+                            "provider": raw_message.get("provider"),
+                            "model": raw_message.get("model"),
+                            "trace_id": raw_message.get("trace_id"),
+                            "observation_id": raw_message.get("observation_id"),
+                        },
+                    },
+                    "metadata": {
+                        "source": "lobechat",
+                        "lobe": lobechat_message_metadata(raw_message),
+                    },
+                    "attachments": attachments,
+                }
+            )
+
+        normalized.append(
+            {
+                "provider": "lobechat",
+                "provider_conversation_id": topic_id,
+                "title": title,
+                "created_at": iso_timestamp(topic.get("created_at")) or normalized_messages[0].get("created_at"),
+                "updated_at": iso_timestamp(topic.get("updated_at")) or normalized_messages[-1].get("created_at"),
+                "metadata": {
+                    "source": "lobechat",
+                    "source_file": source_name,
+                    "user_id": user_id,
+                    "username": username,
+                    "lobe": lobechat_topic_metadata(topic, session),
+                },
+                "messages": normalized_messages,
+            }
+        )
+        message_total += len(normalized_messages)
+        attachment_total += sum(len(message.get("attachments") or []) for message in normalized_messages)
+
+    if not normalized:
+        raise ImportParseError("LobeChat package was recognized, but no conversations could be parsed.")
+    if missing_blobs:
+        warnings.append(f"{missing_blobs} referenced LobeChat blob(s) were missing from the package.")
+
+    return {
+        "provider": "lobechat",
+        "parser_version": "lobechat:v1",
+        "conversations": normalized,
+        "warnings": warnings,
+        "sources": sources,
+        "summary": {
+            "conversation_count": len(normalized),
+            "message_count": message_total,
+            "attachment_count": attachment_total,
+            "source_file_count": len(sources),
+            "user_id": user_id,
+            "username": username,
+            "topics_in_package": len(topics),
+            "messages_in_package": len(messages),
+            "missing_blobs": missing_blobs,
+        },
+    }
+
+
+def normalize_lobechat_attachment(
+    archive: ZipFile,
+    file_row: dict[str, Any],
+    document_row: dict[str, Any] | None,
+    blob_paths: dict[Any, Any],
+    sources: list[dict[str, Any]],
+    source_paths: set[tuple[str, str]],
+) -> tuple[dict[str, Any], bool]:
+    file_id = str(file_row.get("id") or "")
+    filename = str(file_row.get("name") or "attachment").strip() or "attachment"
+    archive_path = str(blob_paths.get(file_id) or f"blobs/{str(file_row.get('url') or '').lstrip('/')}").strip()
+    mime_type = str(file_row.get("file_type") or "") or None
+    stored: dict[str, str | None] | None = None
+    missing_blob = False
+
+    if archive_path and archive_path in archive.namelist():
+        raw = archive.read(archive_path)
+        mime_type = mime_type or detect_mime_type(filename, raw)
+        stored = store_blob_bytes(raw, filename, mime_type)
+        register_lobechat_source(
+            {
+                "kind": "blob",
+                "relative_path": stored["blob_path"],
+                "sha256": stored["sha256"],
+                "metadata": {
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "file_size": len(raw),
+                    "source": "lobechat_blob",
+                    "lobe_file_id": file_id,
+                    "lobe_storage_path": file_row.get("url"),
+                    "archive_path": archive_path,
+                },
+            },
+            sources,
+            source_paths,
+        )
+    elif archive_path:
+        missing_blob = True
+
+    metadata: dict[str, Any] = {
+        "source": "lobechat_file",
+        "file_type": mime_type,
+        "file_size": parse_int(file_row.get("size")),
+        "lobe_file_id": file_id,
+        "lobe_storage_path": file_row.get("url"),
+        "lobe_file_metadata": parse_jsonish(file_row.get("metadata")),
+        "archive_path": archive_path or None,
+    }
+    if document_row:
+        metadata.update(
+            {
+                "document_id": document_row.get("id"),
+                "document_title": document_row.get("title"),
+                "document_description": document_row.get("description"),
+                "document_metadata": parse_jsonish(document_row.get("metadata")),
+                "extracted_content": document_row.get("content"),
+            }
+        )
+
+    return (
+        {
+            "filename": filename,
+            "mime_type": mime_type,
+            "blob_path": stored.get("blob_path") if stored else None,
+            "sha256": stored.get("sha256") if stored else file_row.get("file_hash"),
+            "metadata": metadata,
+        },
+        missing_blob,
+    )
+
+
+def lobechat_author_name(role: Any) -> str | None:
+    normalized = normalize_role(role)
+    if normalized == "user":
+        return "You"
+    if normalized == "assistant":
+        return "LobeChat"
+    return None
+
+
+def lobechat_message_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "message_id": row.get("id"),
+        "topic_id": row.get("topic_id"),
+        "session_id": row.get("session_id"),
+        "thread_id": row.get("thread_id"),
+        "parent_id": row.get("parent_id"),
+        "quota_id": row.get("quota_id"),
+        "agent_id": row.get("agent_id"),
+        "group_id": row.get("group_id"),
+        "target_id": row.get("target_id"),
+        "message_group_id": row.get("message_group_id"),
+        "favorite": row.get("favorite") in {True, "t", "true", "1"},
+        "provider": row.get("provider"),
+        "error": parse_jsonish(row.get("error")),
+        "tools": parse_jsonish(row.get("tools")),
+        "reasoning": parse_jsonish(row.get("reasoning")),
+        "search": parse_jsonish(row.get("search")),
+        "metadata": parse_jsonish(row.get("metadata")),
+        "editor_data": parse_jsonish(row.get("editor_data")),
+        "summary": row.get("summary"),
+    }
+
+
+def lobechat_topic_metadata(topic: dict[str, Any], session: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "topic_id": topic.get("id"),
+        "session_id": topic.get("session_id"),
+        "agent_id": topic.get("agent_id"),
+        "group_id": topic.get("group_id"),
+        "mode": topic.get("mode"),
+        "trigger": topic.get("trigger"),
+        "favorite": topic.get("favorite") in {True, "t", "true", "1"},
+        "history_summary": topic.get("history_summary"),
+        "metadata": parse_jsonish(topic.get("metadata")),
+        "editor_data": parse_jsonish(topic.get("editor_data")),
+        "session": session,
+    }
+
+
+def register_lobechat_source(source: dict[str, Any], sources: list[dict[str, Any]], seen: set[tuple[str, str]]) -> None:
+    key = (str(source.get("kind") or ""), str(source.get("relative_path") or ""))
+    if not key[0] or not key[1] or key in seen:
+        return
+    seen.add(key)
+    sources.append(source)
+
+
+def parse_jsonish(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value
+    try:
+        return json.loads(str(value))
+    except json.JSONDecodeError:
+        return value
+
+
+def parse_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_pi_export(export_path: Path) -> dict[str, Any]:
