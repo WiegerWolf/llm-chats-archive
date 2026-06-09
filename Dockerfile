@@ -1,9 +1,9 @@
-FROM node:20-bookworm-slim AS frontend-build
+FROM oven/bun:1.3.8 AS frontend-build
 WORKDIR /src/frontend
-COPY frontend/package.json ./
-RUN npm install
+COPY frontend/package.json frontend/bun.lock ./
+RUN bun install --frozen-lockfile
 COPY frontend/ ./
-RUN npm run build
+RUN bun run build
 
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \

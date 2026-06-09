@@ -1,0 +1,13 @@
+.git
+.dev
+.venv
+data
+
+frontend/node_modules
+frontend/dist
+frontend/tsconfig.tsbuildinfo
+
+__pycache__
+*.py[cod]
+.DS_Store
+Thumbs.db

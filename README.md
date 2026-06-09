@@ -91,8 +91,8 @@ uvicorn backend.app.main:app --reload
 
 ```bash
 cd frontend
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 The Vite dev server proxies `/api` to `http://127.0.0.1:8000`.
