@@ -940,7 +940,12 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
   const presentation = getMessagePresentation(msg)
   const research = getKimiResearchData(msg.metadata)
   const thinking = getClaudeThinkingData(msg)
-  const showBody = presentation.kind === 'code' || presentation.text.trim().length > 0
+  const claudeBlocks = presentation.kind === 'markdown' ? getClaudeVisibleBlocks(msg) : []
+  const claudeTextBlocks = claudeBlocks.filter((block): block is Extract<ClaudeVisibleBlock, { kind: 'text' }> => block.kind === 'text')
+  const claudeToolBlocks = claudeBlocks.filter((block): block is Extract<ClaudeVisibleBlock, { kind: 'tool' }> => block.kind === 'tool')
+  const markdownText = claudeBlocks.length > 0 ? claudeTextBlocks.map((block) => block.text).join('\n\n') : presentation.text
+  const displayModel = visibleModelLabel(msg.model)
+  const showBody = presentation.kind === 'code' || (presentation.kind === 'markdown' ? markdownText : presentation.text).trim().length > 0
   const borderColor = RoleBorderStyles[msg.role] || 'border-l-zinc-200'
 
   return (
@@ -953,14 +958,17 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
         <div className="flex items-center gap-2 min-w-0">
           <RoleMarker role={msg.role} />
           <span className="text-[0.8125rem] font-semibold truncate">{msg.author_name || roleDisplayName(msg.role)}</span>
-          {msg.model && <span className="text-2xs text-zinc-400 truncate hidden sm:inline">{msg.model}</span>}
+          {displayModel && <span className="text-2xs text-zinc-400 truncate hidden sm:inline">{displayModel}</span>}
         </div>
         <span className="text-2xs text-zinc-400 font-mono whitespace-nowrap shrink-0" title={formatDateFull(msg.created_at)}>
           #{msg.sequence}{msg.created_at ? ` · ${timeAgo(msg.created_at)}` : ''}
         </span>
       </div>
+      {(thinking.length > 0 || claudeToolBlocks.length > 0) && (
+        <ClaudeMetaRow thoughts={thinking} tools={claudeToolBlocks} highlightQuery={highlightQuery} />
+      )}
       {showBody && (presentation.kind === 'markdown' ? (
-        <MarkdownContent text={presentation.text} highlightQuery={highlightQuery} className="text-[0.8125rem] leading-relaxed break-words" />
+        <MarkdownContent text={markdownText} highlightQuery={highlightQuery} className="text-[0.8125rem] leading-relaxed break-words" />
       ) : presentation.kind === 'payload' ? (
         <div className="space-y-2 rounded-md border border-zinc-200 bg-white px-3 py-3">
           <div>
@@ -987,7 +995,6 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
           )}
         </div>
       ))}
-      {thinking.length > 0 && <ThinkingBlock thoughts={thinking} highlightQuery={highlightQuery} />}
       {research && <KimiResearchBlock data={research} highlightQuery={highlightQuery} />}
       {msg.attachments.length > 0 && (
         <div className="mt-3 pt-3 border-t border-zinc-200">
@@ -999,10 +1006,57 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
   )
 }
 
+function ClaudeMetaRow({ thoughts, tools, highlightQuery }: { thoughts: ClaudeThinkingEntry[]; tools: Array<Extract<ClaudeVisibleBlock, { kind: 'tool' }>>; highlightQuery: string }) {
+  return (
+    <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+      {thoughts.length > 0 && <ThinkingBlock thoughts={thoughts} highlightQuery={highlightQuery} />}
+      {tools.length > 0 && <ClaudeToolsBlock tools={tools} highlightQuery={highlightQuery} />}
+    </div>
+  )
+}
+
+function ClaudeToolsBlock({ tools, highlightQuery }: { tools: Array<Extract<ClaudeVisibleBlock, { kind: 'tool' }>>; highlightQuery: string }) {
+  return (
+    <details className="min-w-0 flex-1 overflow-hidden rounded-md border border-amber-200 bg-white sm:min-w-[14rem]">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[0.8125rem] font-medium text-amber-800">
+        <Wrench className="h-3.5 w-3.5" />
+        Tool calls
+        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-2xs font-semibold text-amber-800">{tools.length}</span>
+      </summary>
+      <div className="space-y-2 border-t border-amber-200 bg-amber-50/40 p-3">
+        {tools.map((tool, index) => (
+          <ClaudeToolBlock key={`${tool.type}-${tool.name}-${index}`} block={tool} highlightQuery={highlightQuery} />
+        ))}
+      </div>
+    </details>
+  )
+}
+
+function ClaudeToolBlock({ block, highlightQuery }: { block: Extract<ClaudeVisibleBlock, { kind: 'tool' }>; highlightQuery: string }) {
+  const title = block.type === 'tool_use' ? 'Tool use' : 'Tool result'
+  return (
+    <div className="overflow-hidden rounded-lg border border-amber-200 bg-white shadow-sm">
+      <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-100/70 px-3 py-2 text-2xs font-semibold uppercase tracking-[0.14em] text-amber-800">
+        <Wrench className="h-3.5 w-3.5" />
+        <span>{title}</span>
+        <span className="rounded-full bg-white/75 px-2 py-0.5 font-mono normal-case tracking-normal text-amber-900">{block.name}</span>
+      </div>
+      <div className="space-y-2 px-3 py-3">
+        {block.text && <MarkdownContent text={block.text} highlightQuery={highlightQuery} className="text-[0.8125rem] leading-relaxed break-words text-zinc-700" />}
+        {block.input != null && <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-amber-100 bg-amber-50/60 px-3 py-2 font-mono text-xs leading-relaxed text-zinc-700"><code>{safeJson(block.input)}</code></pre>}
+      </div>
+    </div>
+  )
+}
+
 function ThinkingBlock({ thoughts, highlightQuery }: { thoughts: ClaudeThinkingEntry[]; highlightQuery: string }) {
   return (
-    <details className="mt-3 rounded-md border border-zinc-200 bg-white">
-      <summary className="cursor-pointer list-none px-3 py-2 text-[0.8125rem] font-medium text-zinc-700">Thinking</summary>
+    <details className="min-w-0 flex-1 rounded-md border border-zinc-200 bg-white sm:min-w-[14rem]">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[0.8125rem] font-medium text-zinc-700">
+        <Sparkles className="h-3.5 w-3.5" />
+        Thinking
+        <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-2xs font-semibold text-zinc-600">{thoughts.length}</span>
+      </summary>
       <div className="space-y-2 border-t border-zinc-200 p-3">
         {thoughts.map((thought, index) => {
           return (
@@ -1103,7 +1157,6 @@ function SectionCard({ title, icon, children }: { title: string; icon: React.Rea
 // ── Attachments ──
 
 function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) {
-  const [open, setOpen] = useState(false)
   const preview = getExtractedContent(attachment.metadata)
   const info = describeAttachment(attachment.metadata)
   const sourceUrl = getAttachmentSourceUrl(attachment.metadata)
@@ -1112,8 +1165,10 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
   const isPdf = isPdfAttachment(attachment)
   const isVideo = isVideoAttachment(attachment)
   const isAudio = isAudioAttachment(attachment)
-  const canPreview = Boolean(preview || isImage)
-  const canRichPreview = Boolean(isImage || isPdf || isVideo || isAudio)
+  const canRichPreview = Boolean(attachmentUrl && (isImage || isPdf || isVideo || isAudio))
+  const canPreview = Boolean(preview || canRichPreview)
+  const missingFile = !attachmentUrl && (isImage || isPdf || isVideo || isAudio)
+  const [open, setOpen] = useState(() => Boolean(attachmentUrl && isImage))
 
   return (
     <>
@@ -1138,6 +1193,8 @@ function AttachmentItem({ attachment }: { attachment: ConversationAttachment }) 
             <Btn variant="ghost" className="text-xs h-auto py-0.5 px-1.5" onClick={() => setOpen((v) => !v)}>
               {open ? <><EyeOff className="w-3 h-3" /> Hide</> : <><Eye className="w-3 h-3" /> View</>}
             </Btn>
+          ) : missingFile ? (
+            <span className="text-xs text-zinc-400">File not exported</span>
           ) : (
             <span className="text-xs text-zinc-400">No text</span>
           )}
@@ -1561,6 +1618,10 @@ type ClaudeThinkingEntry = {
   summaries: string[]
 }
 
+type ClaudeVisibleBlock =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; type: 'tool_use' | 'tool_result'; name: string; text?: string; input?: unknown }
+
 type MessagePresentation =
   | { kind: 'markdown'; text: string }
   | { kind: 'code'; text: string; title?: string; raw?: string }
@@ -1612,6 +1673,50 @@ function getVisibleMessageText(msg: ConversationDetail['messages'][0]): string {
   }
 
   return msg.text
+}
+
+function getClaudeVisibleBlocks(msg: ConversationDetail['messages'][0]): ClaudeVisibleBlock[] {
+  const blocks = asArray(asRecord(msg.content)?.blocks)
+    .map((item) => asRecord(item))
+    .filter(isPresent)
+    .map((block) => renderClaudeBlock(block))
+    .filter(isPresent)
+
+  return blocks
+}
+
+function renderClaudeBlock(block: Record<string, unknown>): ClaudeVisibleBlock | null {
+  const blockType = asString(block.type).toLowerCase()
+  if (blockType === 'thinking' || blockType === 'token_budget') return null
+  if (blockType === 'text') {
+    const text = asString(block.text)
+    return text ? { kind: 'text', text } : null
+  }
+  if (blockType === 'voice_note') {
+    const text = [asString(block.title) || 'Voice note', asString(block.text)].filter(Boolean).join('\n').trim()
+    return text ? { kind: 'text', text } : null
+  }
+  if (blockType === 'tool_result') {
+    return {
+      kind: 'tool',
+      type: 'tool_result',
+      name: asString(block.name) || 'tool',
+      text: flattenTextContent(block.content),
+    }
+  }
+  if (blockType === 'tool_use') {
+    const input = asRecord(block.input)
+    const details = [asString(input?.command), asString(input?.id), asString(input?.name)].filter(Boolean).join(' - ')
+    return {
+      kind: 'tool',
+      type: 'tool_use',
+      name: asString(block.name) || 'tool',
+      text: details || undefined,
+      input: input || undefined,
+    }
+  }
+  const text = flattenTextContent(block)
+  return text ? { kind: 'text', text } : null
 }
 
 function getChatGptSpecialPayload(msg: ConversationDetail['messages'][0]): MessagePresentation | null {
@@ -1885,6 +1990,12 @@ function asString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function visibleModelLabel(model: string | null | undefined): string {
+  const value = asString(model)
+  if (/\(model unavailable\)$/i.test(value)) return ''
+  return value
+}
+
 function formatToolSummary(tool: { name?: string; status?: string; args?: unknown; contents?: unknown }) {
   const parts = [
     tool.status ? `status: ${tool.status}` : '',
@@ -1894,9 +2005,9 @@ function formatToolSummary(tool: { name?: string; status?: string; args?: unknow
   return parts.join('\n') || (tool.name || 'tool activity')
 }
 
-function safeJson(value: unknown) {
+function safeJson(value: unknown): string {
   try {
-    return JSON.stringify(value, null, 2)
+    return JSON.stringify(value, null, 2) ?? String(value)
   } catch {
     return String(value)
   }

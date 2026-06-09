@@ -360,6 +360,7 @@ def parse_claude_export(export_path: Path) -> dict[str, Any]:
     if not isinstance(conversations, list):
         raise ImportParseError("Claude export did not contain a conversation list.")
 
+    archive_file_index = build_claude_archive_file_index(export_path)
     normalized: list[dict[str, Any]] = []
     warnings: list[str] = []
     message_total = 0
@@ -382,7 +383,7 @@ def parse_claude_export(export_path: Path) -> dict[str, Any]:
 
             role = normalize_role(raw_message.get("sender"))
             text = flatten_claude_message(raw_message)
-            attachments = extract_claude_attachments(raw_message)
+            attachments = extract_claude_attachments(raw_message, export_path, archive_file_index)
             if not text.strip() and not attachments:
                 continue
 
@@ -2064,14 +2065,7 @@ def extract_nested(candidate: dict[str, Any], path: list[str]) -> Any:
 
 
 def fallback_assistant_model(provider: str, role: str) -> str | None:
-    if role != "assistant":
-        return None
-    labels = {
-        "claude": "Claude (model unavailable)",
-        "kimi": "Kimi (model unavailable)",
-        "pi": "Pi (model unavailable)",
-    }
-    return labels.get(provider)
+    return None
 
 
 def pi_author_name(sender: Any) -> str | None:
@@ -2340,23 +2334,67 @@ def extract_claude_thinking_blocks(message: dict[str, Any]) -> list[dict[str, An
     return thoughts
 
 
-def extract_claude_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:
+def build_claude_archive_file_index(export_path: Path) -> dict[str, str]:
+    if export_path.suffix.lower() != ".zip":
+        return {}
+
+    index: dict[str, str] = {}
+    with ZipFile(export_path) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            name = PurePosixPath(info.filename).name
+            if not name or name.lower().endswith(".json"):
+                continue
+            for key in {name.lower(), Path(name).stem.lower()}:
+                index.setdefault(key, info.filename)
+    return index
+
+
+def store_claude_archive_file(export_path: Path, archive_file_index: dict[str, str], filename: str, file_uuid: Any) -> dict[str, Any] | None:
+    if not archive_file_index:
+        return None
+
+    keys = [str(file_uuid or "").strip().lower(), filename.strip().lower(), Path(filename).stem.lower()]
+    archive_name = next((archive_file_index[key] for key in keys if key and key in archive_file_index), None)
+    if not archive_name:
+        return None
+
+    with ZipFile(export_path) as archive:
+        raw = archive.read(archive_name)
+    mime_type = detect_mime_type(filename, raw)
+    stored = store_blob_bytes(raw, filename, mime_type)
+    return {
+        "mime_type": mime_type,
+        "blob_path": stored["blob_path"],
+        "sha256": stored["sha256"],
+        "file_size": len(raw),
+        "archive_path": archive_name,
+    }
+
+
+def extract_claude_attachments(message: dict[str, Any], export_path: Path | None = None, archive_file_index: dict[str, str] | None = None) -> list[dict[str, Any]]:
     extracted: list[dict[str, Any]] = []
+    archive_index = archive_file_index or {}
     for attachment in message.get("attachments") or []:
         if not isinstance(attachment, dict):
             continue
         filename = str(attachment.get("file_name") or "attachment").strip() or "attachment"
+        file_uuid = attachment.get("file_uuid")
+        stored = store_claude_archive_file(export_path, archive_index, filename, file_uuid) if export_path else None
         extracted.append(
             {
                 "filename": filename,
-                "mime_type": None,
-                "blob_path": None,
-                "sha256": None,
+                "mime_type": stored.get("mime_type") if stored else detect_mime_type(filename, b""),
+                "blob_path": stored.get("blob_path") if stored else None,
+                "sha256": stored.get("sha256") if stored else None,
                 "metadata": {
                     "source": "claude_attachment",
-                    "file_size": attachment.get("file_size"),
+                    "file_uuid": file_uuid,
+                    "file_size": stored.get("file_size") if stored else attachment.get("file_size"),
                     "file_type": attachment.get("file_type"),
                     "extracted_content": attachment.get("extracted_content"),
+                    "archive_path": stored.get("archive_path") if stored else None,
                 },
             }
         )
@@ -2364,14 +2402,19 @@ def extract_claude_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(file_item, dict):
             continue
         filename = str(file_item.get("file_name") or "file").strip() or "file"
+        file_uuid = file_item.get("file_uuid")
+        stored = store_claude_archive_file(export_path, archive_index, filename, file_uuid) if export_path else None
         extracted.append(
             {
                 "filename": filename,
-                "mime_type": None,
-                "blob_path": None,
-                "sha256": None,
+                "mime_type": stored.get("mime_type") if stored else detect_mime_type(filename, b""),
+                "blob_path": stored.get("blob_path") if stored else None,
+                "sha256": stored.get("sha256") if stored else None,
                 "metadata": {
                     "source": "claude_file_reference",
+                    "file_uuid": file_uuid,
+                    "file_size": stored.get("file_size") if stored else None,
+                    "archive_path": stored.get("archive_path") if stored else None,
                 },
             }
         )

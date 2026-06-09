@@ -1,0 +1,14 @@
+services:
+  archive:
+    build:
+      context: .
+    ports:
+      - "8090:8000"
+    restart: unless-stopped
+    environment:
+      ARCHIVE_DATA_DIR: /data
+    volumes:
+      - archive-data:/data
+
+volumes:
+  archive-data:
