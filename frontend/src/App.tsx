@@ -8,6 +8,14 @@ import {
 } from 'lucide-react'
 import { cn } from './cn'
 import { api, type ConversationAttachment, type ConversationDetail, type ConversationListItem, type ImportRecord, type ImportSource, type SessionState } from './api'
+import chatgptLogo from './assets/providers/chatgpt.svg'
+import claudeLogo from './assets/providers/claude.svg'
+import geminiLogo from './assets/providers/gemini.svg'
+import googleAiStudioLogo from './assets/providers/googleaistudio.png'
+import kimiLogo from './assets/providers/kimi.png'
+import lobeChatLogo from './assets/providers/lobechat.png'
+import metaLogo from './assets/providers/meta.png'
+import piLogo from './assets/providers/pi.svg'
 
 // ── Marked config ──
 
@@ -320,19 +328,43 @@ function Badge({ children, variant = 'default', className }: { children: React.R
 }
 
 function ProviderBadge({ provider }: { provider: string }) {
+  const logos = {
+    chatgpt: chatgptLogo,
+    claude: claudeLogo,
+    gemini: geminiLogo,
+    googleaistudio: googleAiStudioLogo,
+    kimi: kimiLogo,
+    lobechat: lobeChatLogo,
+    meta: metaLogo,
+    pi: piLogo,
+  } as const
+
   const p = provider.toLowerCase()
-  let variant: 'chatgpt' | 'claude' | 'gemini' | 'kimi' | 'pi' | 'googleaistudio' | 'default' = 'default'
+  let logo: keyof typeof logos | null = null
   let label = provider
-  if (p.includes('chatgpt') || p.includes('openai')) variant = 'chatgpt'
-  else if (p.includes('claude') || p.includes('anthropic')) variant = 'claude'
+  if (p.includes('chatgpt') || p.includes('openai')) { logo = 'chatgpt'; label = 'ChatGPT' }
+  else if (p.includes('claude') || p.includes('anthropic')) { logo = 'claude'; label = 'Claude' }
   else if (p.includes('googleaistudio') || p.includes('google ai studio')) {
-    variant = 'googleaistudio'
+    logo = 'googleaistudio'
     label = 'Google AI Studio'
   }
-  else if (p.includes('gemini') || p.includes('google')) variant = 'gemini'
-  else if (p.includes('kimi') || p.includes('moonshot')) variant = 'kimi'
-  else if (p === 'pi' || p.includes('pi.ai')) { variant = 'pi'; label = 'Pi' }
-  return <Badge variant={variant}>{label}</Badge>
+  else if (p.includes('gemini') || p.includes('google')) { logo = 'gemini'; label = 'Gemini' }
+  else if (p.includes('kimi') || p.includes('moonshot')) { logo = 'kimi'; label = 'Kimi' }
+  else if (p.includes('lobechat') || p.includes('lobe')) { logo = 'lobechat'; label = 'LobeChat' }
+  else if (p.includes('meta') || p.includes('llama') || p.includes('facebook')) { logo = 'meta'; label = 'Meta' }
+  else if (p === 'pi' || p.includes('pi.ai')) { logo = 'pi'; label = 'Pi' }
+
+  if (!logo) return <Badge>{label}</Badge>
+
+  return (
+    <span
+      className="inline-flex h-6 w-6 items-center justify-center overflow-hidden rounded-full border border-zinc-200 bg-white shadow-sm"
+      title={label}
+      aria-label={label}
+    >
+      <img src={logos[logo]} alt="" className="h-full w-full object-contain" />
+    </span>
+  )
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -652,7 +684,7 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
   const logout = async () => { await api.logout(); await onLogout(); navigate('/') }
 
   // Provider list
-  const knownProviders = ['chatgpt', 'claude', 'gemini', 'googleaistudio', 'kimi', 'pi'] as const
+  const knownProviders = ['chatgpt', 'claude', 'gemini', 'googleaistudio', 'kimi', 'meta', 'pi', 'lobechat'] as const
   const providerOptions = [
     ...knownProviders.filter((item) => providerCounts[item] != null),
     ...Object.keys(providerCounts)
