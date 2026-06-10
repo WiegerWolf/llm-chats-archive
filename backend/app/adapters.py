@@ -21,6 +21,8 @@ def parse_export(export_path: Path) -> dict[str, Any]:
     provider = detect_provider(export_path)
     if provider == "lobechat":
         return parse_lobechat_export(export_path)
+    if provider == "meta":
+        return parse_meta_export(export_path)
     if provider == "pi":
         return parse_pi_export(export_path)
     if provider == "kimi":
@@ -43,6 +45,8 @@ def detect_provider(export_path: Path) -> str:
             names = [name.lower() for name in archive.namelist()]
             if any(PurePosixPath(name).name == "lobechat_export.json" for name in names):
                 return "lobechat"
+            if looks_like_meta_archive_names(names):
+                return "meta"
         if looks_like_google_ai_studio_archive(export_path):
             return "googleaistudio"
         with ZipFile(export_path) as archive:
@@ -62,6 +66,8 @@ def detect_provider(export_path: Path) -> str:
                 return "gemini"
     if export_path.suffix.lower() == ".json" or lower_name.endswith(".json"):
         document = load_json_file(export_path)
+        if looks_like_meta_conversations_document(document):
+            return "meta"
         if looks_like_pi_export(document):
             return "pi"
         if looks_like_kimi_capture_bundle(document):
@@ -408,6 +414,162 @@ def parse_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def parse_meta_export(export_path: Path) -> dict[str, Any]:
+    if export_path.suffix.lower() == ".zip":
+        document = load_named_json_from_zip(export_path, "your_ai_conversations.json")
+        source_name = "meta_ai_profile/your_ai_conversations.json"
+    elif export_path.suffix.lower() == ".json":
+        document = load_json_file(export_path)
+        source_name = export_path.name
+    else:
+        raise ImportParseError("Meta AI imports must be a .zip or your_ai_conversations.json file.")
+
+    entries = extract_meta_conversation_entries(document)
+    if not entries:
+        raise ImportParseError("Meta AI export did not contain recognizable conversation text entries.")
+
+    conversations: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    message_total = 0
+
+    for index, entry in enumerate(entries, start=1):
+        label = str(entry.get("label") or "").strip()
+        text = repair_meta_text(str(entry.get("value") or ""))
+        messages = parse_meta_text_messages(text, label)
+        if not messages:
+            warnings.append(f"Skipped Meta AI conversation {label or index}: no message turns found.")
+            continue
+
+        created_at = meta_timestamp_from_label(label)
+        title = meta_conversation_title(text, messages, index)
+        conversations.append(
+            {
+                "provider": "meta",
+                "provider_conversation_id": stable_hash(f"meta:{label or index}"),
+                "title": title,
+                "created_at": created_at,
+                "updated_at": created_at,
+                "metadata": {
+                    "source": "meta",
+                    "source_file": source_name,
+                    "entry_label": label,
+                },
+                "messages": messages,
+            }
+        )
+        message_total += len(messages)
+
+    if not conversations:
+        raise ImportParseError("Meta AI export was recognized, but no conversations could be parsed.")
+
+    return {
+        "provider": "meta",
+        "parser_version": "meta:v1",
+        "conversations": conversations,
+        "warnings": warnings,
+        "summary": {
+            "conversation_count": len(conversations),
+            "message_count": message_total,
+            "attachment_count": 0,
+            "entries_in_export": len(entries),
+        },
+    }
+
+
+def looks_like_meta_archive_names(names: list[str]) -> bool:
+    return any(PurePosixPath(name).name == "your_ai_conversations.json" for name in names) and any(
+        name.startswith("meta_ai_profile/") for name in names
+    )
+
+
+def looks_like_meta_conversations_document(document: Any) -> bool:
+    return bool(extract_meta_conversation_entries(document))
+
+
+def extract_meta_conversation_entries(document: Any) -> list[dict[str, Any]]:
+    if not isinstance(document, dict):
+        return []
+
+    found: list[dict[str, Any]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            label = str(value.get("label") or "").strip()
+            text = value.get("value")
+            if label.startswith("Conversation with Meta AI_") and isinstance(text, str):
+                found.append(value)
+                return
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(document.get("label_values"))
+    return found
+
+
+def parse_meta_text_messages(text: str, label: str) -> list[dict[str, Any]]:
+    matches = list(re.finditer(r"(?m)^(You|Meta AI):[ \t]*", text))
+    messages: list[dict[str, Any]] = []
+    for sequence, match in enumerate(matches, start=1):
+        sender = match.group(1)
+        start = match.end()
+        end = matches[sequence].start() if sequence < len(matches) else len(text)
+        body = text[start:end].strip()
+        if not body:
+            continue
+        role = "user" if sender == "You" else "assistant"
+        messages.append(
+            {
+                "provider_message_id": stable_hash(f"meta:{label}:{sequence}:{sender}:{body}"),
+                "role": role,
+                "author_name": sender,
+                "model": "Meta AI" if role == "assistant" else None,
+                "created_at": None,
+                "sequence": len(messages) + 1,
+                "text": body,
+                "content": {
+                    "text": body,
+                    "source": "meta",
+                },
+                "metadata": {
+                    "source": "meta",
+                    "sender": sender,
+                    "entry_label": label,
+                },
+                "attachments": [],
+            }
+        )
+    return messages
+
+
+def meta_timestamp_from_label(label: str) -> str | None:
+    match = re.search(r"_(\d{2}-\d{2}-\d{4})_(\d+)\.txt$", label)
+    if not match:
+        return None
+    return iso_timestamp(match.group(2))
+
+
+def meta_conversation_title(text: str, messages: list[dict[str, Any]], index: int) -> str:
+    first_user = next((message for message in messages if message.get("role") == "user"), None)
+    if first_user:
+        compact = re.sub(r"\s+", " ", str(first_user.get("text") or "")).strip()
+        if compact:
+            return compact[:80]
+
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return first_line or f"Meta AI conversation {index}"
+
+
+def repair_meta_text(value: str) -> str:
+    try:
+        repaired = value.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return value
+    return repaired if "â" in value or "ð" in value else value
 
 
 def parse_pi_export(export_path: Path) -> dict[str, Any]:
