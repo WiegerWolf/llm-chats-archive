@@ -742,55 +742,6 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-white">
-      {/* ── Top bar ── */}
-      <header className="flex items-center gap-3 h-12 px-4 border-b border-zinc-200 bg-white shrink-0 z-20">
-        <div className="flex items-center gap-2.5 shrink-0">
-          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-indigo-600 text-white shrink-0">
-            <MessageSquareText className="w-3.5 h-3.5" />
-          </div>
-          <span className="text-sm font-semibold text-zinc-900 hidden sm:block">Chat Archive</span>
-        </div>
-
-        <div className="flex-1 max-w-xl mx-2">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400 pointer-events-none" />
-            <input
-              ref={searchRef}
-              value={query}
-              onChange={(e) => handleQueryChange(e.target.value)}
-              placeholder="Search conversations...  /"
-              className="w-full h-8 pl-8 pr-8 text-sm bg-zinc-100/80 rounded-lg border-none outline-none placeholder:text-zinc-400 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:shadow-sm transition-all"
-            />
-            {busy && <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400 animate-spin" />}
-          </div>
-        </div>
-
-        <Btn variant="secondary" onClick={() => setImportDrawerOpen(true)} className="h-8 text-xs shrink-0">
-          <ArrowUpFromLine className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Import</span>
-        </Btn>
-
-        <div className="hidden sm:block flex-1 min-w-0" />
-
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-            className="w-8 h-8 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
-            title="Settings"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className="w-8 h-8 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
-            title="Log out"
-          >
-            <LogOut className="w-4 h-4" />
-          </button>
-        </div>
-      </header>
-
       {/* ── Split pane ── */}
       <div className="flex-1 flex min-h-0">
         {/* Left panel: conversation list */}
@@ -798,6 +749,20 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
           'w-full md:w-[380px] lg:w-[420px] border-r border-zinc-200 flex flex-col shrink-0 bg-zinc-50/40',
           selectedConversationId && 'hidden md:flex',
         )}>
+          <div className="px-3 py-2 border-b border-zinc-100 shrink-0">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400 pointer-events-none" />
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => handleQueryChange(e.target.value)}
+                placeholder="Search conversations...  /"
+                className="w-full h-8 pl-8 pr-8 text-sm bg-white rounded-lg border border-zinc-200 outline-none placeholder:text-zinc-400 focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500/20 focus:shadow-sm transition-all"
+              />
+              {busy && <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400 animate-spin" />}
+            </div>
+          </div>
+
           {/* Provider filter pills */}
           {providerOptions.length > 0 && (
             <div className="flex items-center gap-1.5 px-3 py-2 border-b border-zinc-100 overflow-x-auto shrink-0">
@@ -837,7 +802,10 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
             {listError && <p className="text-red-600 text-xs px-3 py-2">{listError}</p>}
             {items.length === 0 && !busy && !listError && (
               <div className="py-12 px-4 text-center text-xs text-zinc-400">
-                {isSearch ? 'No matching conversations' : 'No conversations'}
+                <p>{isSearch ? 'No matching conversations' : 'No conversations'}</p>
+                {!isSearch && totalStats.conversations === 0 && (
+                  <Btn onClick={() => setImportDrawerOpen(true)} className="mt-4">Import</Btn>
+                )}
               </div>
             )}
             {items.map((item) => (
@@ -878,12 +846,31 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
             )}
           </div>
 
-          {/* Stats footer */}
-          {totalStats.conversations > 0 && (
-            <div className="px-3 py-1.5 border-t border-zinc-100 text-2xs text-zinc-400 shrink-0 tabular-nums">
-              {totalStats.conversations.toLocaleString()} conversations · {totalStats.messages.toLocaleString()} messages
+          <div className="px-3 py-1.5 border-t border-zinc-100 text-2xs text-zinc-400 shrink-0 tabular-nums flex items-center justify-between gap-2">
+            <span className="truncate">
+              {totalStats.conversations > 0
+                ? `${totalStats.conversations.toLocaleString()} conversations · ${totalStats.messages.toLocaleString()} messages`
+                : 'No conversations'}
+            </span>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+                title="Settings"
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void logout()}
+                className="w-6 h-6 flex items-center justify-center rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+                title="Log out"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
             </div>
-          )}
+          </div>
         </aside>
 
         {/* Right panel: conversation detail */}
@@ -920,7 +907,8 @@ function EmptyDetailState({ hasData, onImport }: { hasData: boolean; onImport: (
           <>
             <MessageSquareText className="w-10 h-10 text-zinc-200 mx-auto mb-3" />
             <p className="text-sm font-medium text-zinc-400">Select a conversation</p>
-            <p className="text-xs text-zinc-400 mt-1">Pick one from the list or search to find it</p>
+            <p className="text-xs text-zinc-400 mt-1 mb-4">Pick one from the list or search to find it</p>
+            <Btn onClick={onImport}>Import</Btn>
           </>
         ) : (
           <>
@@ -978,24 +966,14 @@ function ConversationDetailPanel({ id, highlightQuery, onBack }: { id: string; h
 
   return (
     <div className="flex flex-col h-full animate-fade-in">
-      {/* Sticky header */}
-      <div className="shrink-0 border-b border-zinc-200 bg-white px-6 py-3 z-10">
+      <div className="md:hidden shrink-0 border-b border-zinc-200 bg-white px-4 py-2 z-10">
         <button
           type="button"
           onClick={onBack}
-          className="md:hidden inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 mb-2 -ml-1"
+          className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-700 -ml-1"
         >
           <ChevronLeft className="w-3.5 h-3.5" /> Back
         </button>
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-semibold tracking-tight truncate flex-1 min-w-0">{conversation.title}</h2>
-          <ProviderBadge provider={conversation.provider} />
-        </div>
-        <div className="text-xs text-zinc-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-          {conversation.created_at && <span title={formatDateFull(conversation.created_at)}>{formatDateShort(conversation.created_at)}</span>}
-          <span>{conversation.messages.length} messages</span>
-          {conversation.source_import && <span className="truncate">from {conversation.source_import.original_filename}</span>}
-        </div>
       </div>
 
       {/* Messages */}
@@ -1037,7 +1015,7 @@ function MessageBlock({ msg, highlightQuery }: { msg: ConversationDetail['messag
           {displayModel && <span className="text-2xs text-zinc-400 truncate hidden sm:inline">{displayModel}</span>}
         </div>
         <span className="text-2xs text-zinc-400 font-mono whitespace-nowrap shrink-0" title={formatDateFull(msg.created_at)}>
-          #{msg.sequence}{msg.created_at ? ` · ${timeAgo(msg.created_at)}` : ''}
+          #{msg.sequence}{msg.created_at ? ` · ${formatDateFull(msg.created_at)}` : ''}
         </span>
       </div>
       {(thinking.length > 0 || claudeToolBlocks.length > 0) && (
