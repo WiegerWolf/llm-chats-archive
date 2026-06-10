@@ -72,6 +72,20 @@ def json_or_none(value: str | None) -> object:
     return json.loads(value)
 
 
+def provider_filter_values(request: Request, provider: str | None) -> list[str]:
+    raw_values = request.query_params.getlist("provider")
+    if not raw_values and provider:
+        raw_values = [provider]
+
+    providers: list[str] = []
+    for raw_value in raw_values:
+        for item in raw_value.split(","):
+            normalized = item.strip().lower()
+            if normalized and normalized not in providers:
+                providers.append(normalized)
+    return providers
+
+
 def backfill_message_models() -> None:
     with connect() as conn:
         rows = conn.execute(
@@ -804,36 +818,27 @@ def list_conversations(request: Request, provider: str | None = None, limit: int
     require_auth(request)
     limit = max(1, min(limit, 100))
     offset = max(offset, 0)
+    providers = provider_filter_values(request, provider)
+    provider_sql = ""
+    params: list[Any] = []
+    if providers:
+        provider_sql = f"WHERE c.provider IN ({', '.join('?' for _ in providers)})"
+        params.extend(providers)
     with connect() as conn:
-        if provider:
-            rows = conn.execute(
-                """
-                SELECT c.id, c.title, c.provider, c.created_at, c.updated_at,
-                       COUNT(m.id) AS message_count,
-                       MAX(m.created_at) AS last_message_at
-                FROM conversations c
-                LEFT JOIN messages m ON m.conversation_id = c.id
-                WHERE c.provider = ?
-                GROUP BY c.id
-                ORDER BY COALESCE(c.updated_at, c.created_at, c.updated_record_at) DESC
-                LIMIT ? OFFSET ?
-                """,
-                (provider, limit, offset),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT c.id, c.title, c.provider, c.created_at, c.updated_at,
-                       COUNT(m.id) AS message_count,
-                       MAX(m.created_at) AS last_message_at
-                FROM conversations c
-                LEFT JOIN messages m ON m.conversation_id = c.id
-                GROUP BY c.id
-                ORDER BY COALESCE(c.updated_at, c.created_at, c.updated_record_at) DESC
-                LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            ).fetchall()
+        rows = conn.execute(
+            f"""
+            SELECT c.id, c.title, c.provider, c.created_at, c.updated_at,
+                   COUNT(m.id) AS message_count,
+                   MAX(m.created_at) AS last_message_at
+            FROM conversations c
+            LEFT JOIN messages m ON m.conversation_id = c.id
+            {provider_sql}
+            GROUP BY c.id
+            ORDER BY COALESCE(c.updated_at, c.created_at, c.updated_record_at) DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [limit, offset]),
+        ).fetchall()
     return {"items": [dict(row) for row in rows]}
 
 
@@ -897,11 +902,12 @@ def search(request: Request, q: str, provider: str | None = None, limit: int = 2
     if not query:
         return {"items": []}
     limit = max(1, min(limit, 50))
-    params: tuple = (query,)
+    params: list[Any] = [query]
     provider_sql = ""
-    if provider:
-        provider_sql = " AND c.provider = ?"
-        params = (query, provider)
+    providers = provider_filter_values(request, provider)
+    if providers:
+        provider_sql = f" AND c.provider IN ({', '.join('?' for _ in providers)})"
+        params.extend(providers)
     sql = f"""
         SELECT c.id, c.title, c.provider, c.updated_at,
                (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count,
@@ -914,9 +920,9 @@ def search(request: Request, q: str, provider: str | None = None, limit: int = 2
         ORDER BY score
         LIMIT ?
     """
-    params = params + (limit * 3,)
+    params.append(limit * 3)
     with connect() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
 
     seen: set[int] = set()
     items = []

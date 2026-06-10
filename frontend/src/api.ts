@@ -142,16 +142,18 @@ export const api = {
     request<{ ok: boolean; deleted: Record<string, number> }>(`/api/imports/${id}`, {
       method: 'DELETE',
     }),
-  listConversations: async (provider?: string, limit = 50, offset = 0) => {
+  listConversations: async (provider?: string | string[], limit = 50, offset = 0) => {
     const params = new URLSearchParams()
-    if (provider) params.set('provider', provider)
+    const providers = Array.isArray(provider) ? provider : provider ? [provider] : []
+    if (providers.length > 0) params.set('provider', providers.join(','))
     params.set('limit', String(limit))
     params.set('offset', String(offset))
     return (await request<{ items: ConversationListItem[] }>(`/api/conversations?${params}`)).items
   },
-  searchConversations: async (query: string, provider?: string, limit = 50) => {
+  searchConversations: async (query: string, provider?: string | string[], limit = 50) => {
     const params = new URLSearchParams({ q: query })
-    if (provider) params.set('provider', provider)
+    const providers = Array.isArray(provider) ? provider : provider ? [provider] : []
+    if (providers.length > 0) params.set('provider', providers.join(','))
     params.set('limit', String(limit))
     return (await request<{ items: Array<ConversationListItem & { snippet: string }> }>(`/api/search?${params}`)).items
   },

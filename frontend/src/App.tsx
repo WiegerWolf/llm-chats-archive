@@ -134,6 +134,22 @@ function MermaidDiagram({ code }: { code: string }) {
   )
 }
 
+function parseProviderSearchParams(params: URLSearchParams): string[] {
+  const providers: string[] = []
+  for (const value of params.getAll('provider')) {
+    for (const item of value.split(',')) {
+      const provider = item.trim().toLowerCase()
+      if (provider && !providers.includes(provider)) providers.push(provider)
+    }
+  }
+  return providers
+}
+
+function syncProviderSearchParams(params: URLSearchParams, providers: string[]) {
+  params.delete('provider')
+  if (providers.length > 0) params.set('provider', providers.join(','))
+}
+
 type MarkdownSegment =
   | { kind: 'html'; text: string }
   | { kind: 'mermaid'; code: string }
@@ -560,7 +576,7 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // Search & filter state
   const [query, setQuery] = useState(searchParams.get('q') || '')
-  const [provider, setProvider] = useState(searchParams.get('provider') || '')
+  const [providers, setProviders] = useState(() => parseProviderSearchParams(searchParams))
   const debouncedQuery = useDebounce(query, DEBOUNCE_MS)
   const isSearch = debouncedQuery.trim().length > 0
 
@@ -581,6 +597,9 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // Search ref
   const searchRef = useRef<HTMLInputElement>(null)
+  const listScrollRef = useRef<HTMLDivElement>(null)
+  const loadMoreRef = useRef<HTMLDivElement>(null)
+  const loadingMoreRef = useRef(false)
 
   // Load dashboard
   const refreshDashboard = useCallback(() => {
@@ -595,15 +614,16 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
   useEffect(() => { refreshDashboard() }, [refreshDashboard])
 
   // Load conversations
-  const load = useCallback(async (prov: string, q: string) => {
+  const load = useCallback(async (selectedProviders: string[], q: string) => {
     setBusy(true)
+    loadingMoreRef.current = false
     try {
       if (q.trim()) {
-        const r = await api.searchConversations(q.trim(), prov || undefined, PAGE_SIZE)
+        const r = await api.searchConversations(q.trim(), selectedProviders, PAGE_SIZE)
         setItems(r)
         setHasMore(false)
       } else {
-        const r = await api.listConversations(prov || undefined, PAGE_SIZE, 0)
+        const r = await api.listConversations(selectedProviders, PAGE_SIZE, 0)
         setItems(r)
         setHasMore(r.length >= PAGE_SIZE)
       }
@@ -616,22 +636,38 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
   }, [])
 
   const initialLoadDone = useRef(false)
-  useEffect(() => { if (!initialLoadDone.current) return; void load(provider, debouncedQuery) }, [debouncedQuery, provider, load])
-  useEffect(() => { void load(provider, debouncedQuery).then(() => { initialLoadDone.current = true }) }, [])
+  useEffect(() => { if (!initialLoadDone.current) return; void load(providers, debouncedQuery) }, [debouncedQuery, providers, load])
+  useEffect(() => { void load(providers, debouncedQuery).then(() => { initialLoadDone.current = true }) }, [])
 
-  const loadMore = async () => {
-    if (isSearch || loadingMore) return
+  const loadMore = useCallback(async () => {
+    if (isSearch || loadingMoreRef.current || !hasMore || busy || listError) return
+    loadingMoreRef.current = true
     setLoadingMore(true)
     try {
-      const r = await api.listConversations(provider || undefined, PAGE_SIZE, items.length)
+      const r = await api.listConversations(providers, PAGE_SIZE, items.length)
       setItems((prev) => [...prev, ...r])
       setHasMore(r.length >= PAGE_SIZE)
+      setListError('')
     } catch (err) {
       setListError(err instanceof Error ? err.message : 'Failed to load more.')
     } finally {
+      loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }
+  }, [busy, hasMore, isSearch, items.length, listError, providers])
+
+  useEffect(() => {
+    const root = listScrollRef.current
+    const target = loadMoreRef.current
+    if (!root || !target || isSearch || !hasMore || listError) return
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadMore()
+    }, { root, rootMargin: '240px 0px 240px 0px' })
+
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [hasMore, isSearch, listError, loadMore])
 
   // URL sync
   const handleQueryChange = (value: string) => {
@@ -642,10 +678,19 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
   }
 
   const handleProviderChange = (p: string) => {
-    const next = provider === p ? '' : p
-    setProvider(next)
+    const next = providers.includes(p)
+      ? providers.filter((item) => item !== p)
+      : [...providers, p]
+    setProviders(next)
     const params = new URLSearchParams(searchParams)
-    if (next) params.set('provider', next); else params.delete('provider')
+    syncProviderSearchParams(params, next)
+    setSearchParams(params, { replace: true })
+  }
+
+  const resetProviders = () => {
+    setProviders([])
+    const params = new URLSearchParams(searchParams)
+    syncProviderSearchParams(params, [])
     setSearchParams(params, { replace: true })
   }
 
@@ -670,14 +715,15 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
         if (importDrawerOpen) setImportDrawerOpen(false)
         else if (settingsOpen) setSettingsOpen(false)
         else if (document.activeElement === searchRef.current) searchRef.current?.blur()
+        else if (selectedConversationId) clearSelection()
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [importDrawerOpen, settingsOpen])
+  }, [importDrawerOpen, location.search, selectedConversationId, settingsOpen])
 
   const handleImportComplete = () => {
-    void load(provider, debouncedQuery)
+    void load(providers, debouncedQuery)
     refreshDashboard()
   }
 
@@ -719,10 +765,13 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
           </div>
         </div>
 
+        <Btn variant="secondary" onClick={() => setImportDrawerOpen(true)} className="h-8 text-xs shrink-0">
+          <ArrowUpFromLine className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Import</span>
+        </Btn>
+
+        <div className="hidden sm:block flex-1 min-w-0" />
+
         <div className="flex items-center gap-1 shrink-0">
-          <Btn variant="secondary" onClick={() => setImportDrawerOpen(true)} className="h-8 text-xs">
-            <ArrowUpFromLine className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Import</span>
-          </Btn>
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
@@ -757,9 +806,10 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
                   key={p}
                   type="button"
                   onClick={() => handleProviderChange(p)}
+                  aria-pressed={providers.includes(p)}
                   className={cn(
                     'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-all cursor-pointer border',
-                    provider === p
+                    providers.includes(p)
                       ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
                       : 'bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50',
                   )}
@@ -770,28 +820,20 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
                   )}
                 </button>
               ))}
-              {provider && (
+              {providers.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => handleProviderChange(provider)}
+                  onClick={resetProviders}
                   className="text-xs text-zinc-400 hover:text-zinc-600 px-1 shrink-0"
                 >
-                  Clear
+                  Reset
                 </button>
               )}
             </div>
           )}
 
-          {/* List heading */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-100 shrink-0">
-            <span className="text-xs font-medium text-zinc-500">
-              {isSearch ? `Results for "${debouncedQuery.trim()}"` : 'All conversations'}
-            </span>
-            <span className="text-2xs text-zinc-400 tabular-nums">{items.length}{hasMore ? '+' : ''}</span>
-          </div>
-
           {/* Conversation list */}
-          <div className="flex-1 overflow-y-auto scroll-thin">
+          <div ref={listScrollRef} className="flex-1 overflow-y-auto scroll-thin">
             {listError && <p className="text-red-600 text-xs px-3 py-2">{listError}</p>}
             {items.length === 0 && !busy && !listError && (
               <div className="py-12 px-4 text-center text-xs text-zinc-400">
@@ -825,11 +867,13 @@ function AppShell({ onLogout }: { onLogout: () => Promise<void> }) {
                 )}
               </button>
             ))}
-            {hasMore && (
-              <div className="px-3 py-3 text-center">
-                <Btn variant="ghost" className="text-xs w-full" onClick={() => void loadMore()} disabled={loadingMore}>
-                  {loadingMore ? <><Loader2 className="w-3 h-3 animate-spin" /> Loading...</> : 'Load more'}
-                </Btn>
+            {items.length > 0 && !isSearch && (
+              <div ref={loadMoreRef} className="min-h-10 px-3 py-3 text-center text-xs text-zinc-400">
+                {hasMore ? (
+                  loadingMore ? <span className="inline-flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Loading more...</span> : null
+                ) : (
+                  <span>No more conversations.</span>
+                )}
               </div>
             )}
           </div>
