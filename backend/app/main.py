@@ -1007,6 +1007,22 @@ if (STATIC_DIR / "assets").exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
 
+@app.get("/favicon.svg")
+def favicon_svg() -> FileResponse:
+    favicon = STATIC_DIR / "favicon.svg"
+    if not favicon.exists():
+        raise HTTPException(status_code=404, detail="Not found.")
+    return FileResponse(favicon, media_type="image/svg+xml")
+
+
+@app.get("/favicon.ico")
+def favicon_ico() -> FileResponse:
+    favicon = STATIC_DIR / "favicon.svg"
+    if not favicon.exists():
+        raise HTTPException(status_code=404, detail="Not found.")
+    return FileResponse(favicon, media_type="image/svg+xml")
+
+
 @app.get("/{full_path:path}")
 def spa(full_path: str) -> Response:
     if full_path.startswith("api/"):
